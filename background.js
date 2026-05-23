@@ -8793,11 +8793,30 @@ const AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR = '.cli-proxy-api';
 const AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR = 'session-cpa';
 const AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR = 'session-sub2';
 
-function buildAutoCompletedSessionExportPath(directoryName = '', fileName = '') {
+function sanitizeAutoCompletedSessionExportPathSegment(value = '') {
+  return String(value || '').trim().replace(/^\/+|\/+$|^\/+|\/+$/g, '');
+}
+
+function getAutoCompletedSessionExportDateStamp(now = new Date()) {
+  const date = now instanceof Date ? now : new Date(now);
+  if (Number.isNaN(date.getTime())) {
+    return 'unknown-date';
+  }
+  const pad = (value) => String(value).padStart(2, '0');
+  return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
+}
+
+function buildAutoCompletedSessionExportPath(directoryName = '', fileName = '', options = {}) {
+  const dateStamp = sanitizeAutoCompletedSessionExportPathSegment(
+    options?.dateStamp || getAutoCompletedSessionExportDateStamp(options?.now || new Date())
+  );
+  const normalizedDirectoryName = sanitizeAutoCompletedSessionExportPathSegment(directoryName || '');
+  const normalizedFileName = sanitizeAutoCompletedSessionExportPathSegment(fileName || '');
   const parts = [
     AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR,
-    String(directoryName || '').trim().replace(/^\/+|\/+$|^\/+|\/+$/g, ''),
-    String(fileName || '').trim().replace(/^\/+|\/+$|^\/+|\/+$/g, ''),
+    normalizedDirectoryName,
+    dateStamp,
+    normalizedFileName,
   ].filter(Boolean);
   return parts.join('/');
 }
@@ -8869,6 +8888,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     session: sessionState?.session,
     accessToken: sessionState?.accessToken,
   };
+  const exportNow = new Date();
+  const exportDateStamp = getAutoCompletedSessionExportDateStamp(exportNow);
   const savedPaths = [];
 
   try {
@@ -8877,8 +8898,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     const cpaContent = `${JSON.stringify(sessionAuth.authJson, null, 2)}
 `;
 
-    const localCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR);
-    const localCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, sessionAuth.fileName);
+    const localCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, '', { dateStamp: exportDateStamp });
+    const localCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, sessionAuth.fileName, { dateStamp: exportDateStamp });
     const localCpaSavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
       directoryPath: localCpaDir,
       filePath: localCpaPath,
@@ -8886,8 +8907,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     });
     savedPaths.push(`本地CPA=${localCpaSavedPath}`);
 
-    const sessionCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR);
-    const sessionCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, sessionAuth.fileName);
+    const sessionCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, '', { dateStamp: exportDateStamp });
+    const sessionCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, sessionAuth.fileName, { dateStamp: exportDateStamp });
     const sessionCpaSavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
       directoryPath: sessionCpaDir,
       filePath: sessionCpaPath,
@@ -8914,8 +8935,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
       'chatgpt-session'
     );
     const fileName = `sub2api-${email}.json`;
-    const sessionSub2Dir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR);
-    const sessionSub2Path = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, fileName);
+    const sessionSub2Dir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, '', { dateStamp: exportDateStamp });
+    const sessionSub2Path = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, fileName, { dateStamp: exportDateStamp });
     const sessionSub2SavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
       directoryPath: sessionSub2Dir,
       filePath: sessionSub2Path,
@@ -8944,8 +8965,12 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        inputDir: AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR,
-        outDir: buildAutoCompletedSessionExportPath('exports'),
+        inputDirs: [
+          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, '', { dateStamp: exportDateStamp }),
+          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, '', { dateStamp: exportDateStamp }),
+          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, '', { dateStamp: exportDateStamp }),
+        ],
+        outDir: buildAutoCompletedSessionExportPath('exports', '', { dateStamp: exportDateStamp }),
         targets: 'cpa,sub2api,cockpit,9router',
       }),
     });
@@ -8962,7 +8987,7 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     }
 
     await addLog(
-      `GPTSession2CPAandSub2API 已处理导出配置：${String(exportPayload?.outDir || buildAutoCompletedSessionExportPath('exports')).trim()}`,
+      `GPTSession2CPAandSub2API 已处理导出配置：${String(exportPayload?.outDir || buildAutoCompletedSessionExportPath('exports', '', { dateStamp: exportDateStamp })).trim()}`,
       'ok'
     );
   } catch (error) {

@@ -241,6 +241,27 @@
       return true;
     }
 
+
+    function isOldAccountAuthFailure(errorLike = null, state = {}) {
+      const text = String(
+        typeof getErrorMessage === 'function'
+          ? getErrorMessage(errorLike)
+          : (errorLike?.message || errorLike || '')
+      ).trim();
+      if (!text) {
+        return false;
+      }
+
+      const matchedByMessage = /STEP9_OAUTH_TIMEOUT::|STEP9_OAUTH_RETRY::|认证失败\s*[:：]?|登录失败|oauth\s+flow\s+timed\s*out|timeout\s+waiting\s+for\s+oauth\s+callback|failed\s+to\s+exchange\s+authorization\s+code\s+for\s+tokens|failed\s+to\s+save\s+authentication\s+tokens|unknown\s+or\s+expired\s+state|invalid\s+state|provider\s+does\s+not\s+match\s+state|failed\s+to\s+persist\s+oauth\s+callback|oauth_(?:code_exchange_failed|token_save_failed|callback_timeout|http_timeout|http_status_error|network_error|unknown_failure)|invalid\s+code|incorrect\s+code|验证码(?:错误|不正确|失效)|登录验证码流程未成功完成|提交(?:邮箱|密码)后未进入验证码页/i.test(text);
+      if (!matchedByMessage) {
+        return false;
+      }
+
+      const nodeId = inferRecordNodeFromError(errorLike, state)
+        || inferRecordNodeFromState(state, ['failed', 'running']);
+      return ['oauth-login', 'fetch-login-code', 'confirm-oauth', 'platform-verify'].includes(String(nodeId || '').trim());
+    }
+
     function shouldKeepCustomMailProviderPoolEmail(state = {}) {
       return String(state?.mailProvider || '').trim().toLowerCase() === 'custom'
         && Array.isArray(state?.customMailProviderPool)
@@ -681,6 +702,7 @@
 
             const reason = getErrorMessage(err);
             roundSummary.failureReasons.push(reason);
+            const latestFailureState = await getState();
             const blockedByPhoneSmsRateLimit = typeof isPhoneSmsPlatformRateLimitFailure === 'function'
               && isPhoneSmsPlatformRateLimitFailure(err);
             const blockedByPhoneNoSupply = !blockedByPhoneSmsRateLimit
@@ -708,6 +730,7 @@
               && isSignupUserAlreadyExistsFailure(err);
             const blockedByStep4Route405 = typeof isStep4Route405RecoveryLimitFailure === 'function'
               && isStep4Route405RecoveryLimitFailure(err);
+            const blockedByOldAccountAuth = isOldAccountAuthFailure(err, latestFailureState);
             const maxPlusNonFreeTrialAttempts = AUTO_RUN_MAX_RETRIES_PER_ROUND + 1;
             const retryablePlusNonFreeTrial = blockedByPlusNonFreeTrial
               && autoRunRetryNonFreeTrial
@@ -723,6 +746,7 @@
               && !blockedByHostedCheckoutVerificationResendLimit
               && !blockedByCloudCheckoutAlreadyPaid
               && !blockedBySignupUserAlreadyExists
+              && !blockedByOldAccountAuth
               && autoRunSkipFailures
               && attemptRun < maxAttemptsForRound;
 
@@ -1041,25 +1065,21 @@
             }
 
             if (blockedByCloudCheckoutAlreadyPaid) {
-              roundSummary.status = 'failed';
-              roundSummary.finalFailureReason = reason;
+              roundSummary.status = 'success';
+              roundSummary.finalFailureReason = '';
+              successfulRuns += 1;
               await setState({
                 autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
               });
-              await appendRoundRecordIfNeeded('failed', reason, err);
-              cancelPendingCommands('当前轮因云端确认账号已开通 Plus，已停止自动重试。');
+              cancelPendingCommands('当前轮已识别为已开通 Plus，直接进入最终收尾。');
               await broadcastStopToContentScripts();
               await addLog(
-                `第 ${targetRun}/${totalRuns} 轮云端返回 User is already paid，当前自动运行已停止，请检查 PLUS 是否已经开通。`,
-                'warn'
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮检测到当前账号已开通 Plus，已按成功轮直接收尾，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮检测到当前账号已开通 Plus，已按成功轮直接收尾，已无后续轮次，本次自动运行将正常结束。`,
+                'ok'
               );
-              stoppedEarly = true;
-              await broadcastAutoRunStatus('stopped', {
-                currentRun: targetRun,
-                totalRuns,
-                attemptRun,
-                sessionId: 0,
-              });
+              forceFreshTabsNextRun = true;
               break;
             }
 
@@ -1092,6 +1112,41 @@
                 targetRun < totalRuns
                   ? `第 ${targetRun}/${totalRuns} 轮因 user_already_exists/用户已存在提前结束，自动流程将继续下一轮。`
                   : `第 ${targetRun}/${totalRuns} 轮因 user_already_exists/用户已存在提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedByOldAccountAuth) {
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因老号登录失败/认证失败已终止。');
+              await broadcastStopToContentScripts();
+              if (!autoRunSkipFailures) {
+                await addLog(
+                  `第 ${targetRun}/${totalRuns} 轮触发老号登录失败/认证失败，自动跳过未开启，当前自动运行将停止。`,
+                  'warn'
+                );
+                stoppedEarly = true;
+                await broadcastAutoRunStatus('stopped', {
+                  currentRun: targetRun,
+                  totalRuns,
+                  attemptRun,
+                  sessionId: 0,
+                });
+                break;
+              }
+
+              await addLog(`第 ${targetRun}/${totalRuns} 轮触发老号登录失败/认证失败，本轮将直接失败并跳过剩余重试。`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因老号登录失败/认证失败提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因老号登录失败/认证失败提前结束，已无后续轮次，本次自动运行结束。`,
                 'warn'
               );
               forceFreshTabsNextRun = true;

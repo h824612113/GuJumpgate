@@ -244,14 +244,28 @@ def save_local_cpa_json(file_path, content, directory_path=""):
 
 
 
-def run_gpt_session_export_configs(input_dir, out_dir="", targets=""):
-    source_dir = Path(str(input_dir or "").strip()).expanduser()
-    if not str(source_dir):
-        raise RuntimeError("Missing inputDir")
-    if not source_dir.is_absolute():
-        raise RuntimeError("inputDir must be absolute")
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise RuntimeError(f"inputDir not found: {source_dir}")
+def run_gpt_session_export_configs(input_dir, out_dir="", targets="", input_dirs=None):
+    source_dirs = []
+    if isinstance(input_dirs, list):
+        for item in input_dirs:
+            candidate = Path(str(item or "").strip()).expanduser()
+            if not str(candidate):
+                continue
+            if not candidate.is_absolute():
+                raise RuntimeError("inputDirs must be absolute")
+            if not candidate.exists() or not candidate.is_dir():
+                raise RuntimeError(f"inputDir not found: {candidate}")
+            source_dirs.append(candidate)
+
+    if not source_dirs:
+        source_dir = Path(str(input_dir or "").strip()).expanduser()
+        if not str(source_dir):
+            raise RuntimeError("Missing inputDir")
+        if not source_dir.is_absolute():
+            raise RuntimeError("inputDir must be absolute")
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise RuntimeError(f"inputDir not found: {source_dir}")
+        source_dirs.append(source_dir)
 
     project_dir = Path(GPT_SESSION_EXPORT_PROJECT_DIR).expanduser()
     if not project_dir.exists() or not project_dir.is_dir():
@@ -268,7 +282,7 @@ def run_gpt_session_export_configs(input_dir, out_dir="", targets=""):
     command = [
         "node",
         str(script_path),
-        str(source_dir),
+        *[str(item) for item in source_dirs],
         "--out",
         str(output_dir),
     ]
@@ -293,7 +307,8 @@ def run_gpt_session_export_configs(input_dir, out_dir="", targets=""):
     manifest_path = output_dir / "manifest.json"
     return {
         "projectDir": str(project_dir),
-        "inputDir": str(source_dir),
+        "inputDir": str(source_dirs[0]),
+        "inputDirs": [str(item) for item in source_dirs],
         "outDir": str(output_dir),
         "manifestPath": str(manifest_path),
         "stdout": stdout,
@@ -963,6 +978,7 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
                     payload.get("inputDir"),
                     payload.get("outDir"),
                     payload.get("targets"),
+                    payload.get("inputDirs"),
                 )
                 json_response(self, 200, {
                     "ok": True,

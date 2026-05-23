@@ -296,8 +296,8 @@
       });
       await addLog(
         skippedNodes.length
-          ? `步骤 6：云端服务确认当前用户已有订阅（${detail}），已跳过后续支付节点：${skippedNodes.join('、')}，继续下一流程节点。`
-          : `步骤 6：云端服务确认当前用户已有订阅（${detail}），继续下一流程节点。`,
+          ? `步骤 6：云端服务确认当前用户已有订阅/当前账号已是 Plus（${detail}），已跳过后续支付节点：${skippedNodes.join('、')}，继续下一流程节点。`
+          : `步骤 6：云端服务确认当前用户已有订阅/当前账号已是 Plus（${detail}），继续下一流程节点。`,
         'ok'
       );
       await completeNodeFromBackground('plus-checkout-create', {
