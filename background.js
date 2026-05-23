@@ -8787,6 +8787,189 @@ async function exportCurrentSessionJson(options = {}) {
   };
 }
 
+
+const AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR = '/Users/hanhao/Documents/GuJumpgate/data/json';
+const AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR = '.cli-proxy-api';
+const AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR = 'session-cpa';
+const AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR = 'session-sub2';
+
+function buildAutoCompletedSessionExportPath(directoryName = '', fileName = '') {
+  const parts = [
+    AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR,
+    String(directoryName || '').trim().replace(/^\/+|\/+$|^\/+|\/+$/g, ''),
+    String(fileName || '').trim().replace(/^\/+|\/+$|^\/+|\/+$/g, ''),
+  ].filter(Boolean);
+  return parts.join('/');
+}
+
+async function saveAutoCompletedSessionExportFile(helperBaseUrl, options = {}) {
+  const directoryPath = String(options?.directoryPath || '').trim();
+  const filePath = String(options?.filePath || '').trim();
+  const content = String(options?.content || '');
+  if (!helperBaseUrl) {
+    throw new Error('未配置 Hotmail 本地助手地址。');
+  }
+  if (!filePath) {
+    throw new Error('缺少导出文件路径。');
+  }
+
+  const endpoint = buildHotmailLocalEndpoint(helperBaseUrl, '/save-auth-json');
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      filePath,
+      directoryPath,
+      content,
+    }),
+  });
+
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch {
+    payload = {};
+  }
+
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(String(payload?.error || `本地 helper 写入失败（HTTP ${response.status}）。`).trim());
+  }
+
+  return String(payload?.filePath || filePath).trim();
+}
+
+function shouldAutoExportCompletedSessionArtifacts(state = {}) {
+  return Boolean(state?.plusModeEnabled);
+}
+
+async function autoExportCompletedSessionArtifacts(state = {}) {
+  if (!shouldAutoExportCompletedSessionArtifacts(state)) {
+    return;
+  }
+
+  const helperBaseUrl = normalizeHotmailLocalBaseUrl(state?.hotmailLocalBaseUrl);
+  if (!helperBaseUrl) {
+    await addLog(`自动导出 JSON 已跳过：未配置本地助手地址，目标目录 ${AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR}。`, 'warn');
+    return;
+  }
+
+  let sessionState = null;
+  try {
+    sessionState = await readCurrentChatGptSessionForExport();
+  } catch (error) {
+    await addLog(`自动导出 JSON 已跳过：${getErrorMessage(error)}`, 'warn');
+    return;
+  }
+
+  const exportState = {
+    ...state,
+    session: sessionState?.session,
+    accessToken: sessionState?.accessToken,
+  };
+  const savedPaths = [];
+
+  try {
+    const cpaApi = getCpaSessionExportApi();
+    const sessionAuth = cpaApi.buildCpaSessionAuthJson(exportState, { now: new Date() });
+    const cpaContent = `${JSON.stringify(sessionAuth.authJson, null, 2)}
+`;
+
+    const localCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR);
+    const localCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, sessionAuth.fileName);
+    const localCpaSavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
+      directoryPath: localCpaDir,
+      filePath: localCpaPath,
+      content: cpaContent,
+    });
+    savedPaths.push(`本地CPA=${localCpaSavedPath}`);
+
+    const sessionCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR);
+    const sessionCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, sessionAuth.fileName);
+    const sessionCpaSavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
+      directoryPath: sessionCpaDir,
+      filePath: sessionCpaPath,
+      content: cpaContent,
+    });
+    savedPaths.push(`SESSION-CPA=${sessionCpaSavedPath}`);
+
+    if (!sessionAuth.hasRefreshToken) {
+      await addLog('自动导出 SESSION-CPA：当前 SESSION 未包含 refresh_token，导出的 CPA JSON 无法自动续期。', 'warn');
+    }
+  } catch (error) {
+    await addLog(`自动导出 CPA JSON 失败：${getErrorMessage(error)}`, 'warn');
+  }
+
+  try {
+    const sub2Api = getSub2SessionExportApi();
+    const exportPayload = await sub2Api.buildCodexSessionImportPayloadForExport(exportState, {
+      timeoutMs: 15000,
+    });
+    const fileContent = `${JSON.stringify(exportPayload.payload, null, 2)}
+`;
+    const email = sanitizeSessionExportFileSegment(
+      exportPayload.payload?.accounts?.[0]?.name || sessionState.session?.user?.email || sessionState.session?.email || '',
+      'chatgpt-session'
+    );
+    const fileName = `sub2api-${email}.json`;
+    const sessionSub2Dir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR);
+    const sessionSub2Path = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, fileName);
+    const sessionSub2SavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
+      directoryPath: sessionSub2Dir,
+      filePath: sessionSub2Path,
+      content: fileContent,
+    });
+    savedPaths.push(`SESSION-SUB2=${sessionSub2SavedPath}`);
+    for (const warning of Array.isArray(exportPayload.warnings) ? exportPayload.warnings : []) {
+      if (warning) {
+        await addLog(`自动导出 SESSION-SUB2：${String(warning)}`, 'warn');
+      }
+    }
+  } catch (error) {
+    await addLog(`自动导出 SUB2 JSON 失败：${getErrorMessage(error)}`, 'warn');
+  }
+
+  if (savedPaths.length) {
+    await addLog(`本轮完成后已自动导出 JSON：${savedPaths.join(' | ')}`, 'ok');
+  }
+
+  try {
+    const exportEndpoint = buildHotmailLocalEndpoint(helperBaseUrl, '/export-gpt-session-configs');
+    const exportResponse = await fetch(exportEndpoint, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        inputDir: AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR,
+        outDir: buildAutoCompletedSessionExportPath('exports'),
+        targets: 'cpa,sub2api,cockpit,9router',
+      }),
+    });
+
+    let exportPayload = {};
+    try {
+      exportPayload = await exportResponse.json();
+    } catch {
+      exportPayload = {};
+    }
+
+    if (!exportResponse.ok || exportPayload?.ok === false) {
+      throw new Error(String(exportPayload?.error || `配置生成失败（HTTP ${exportResponse.status}）。`).trim());
+    }
+
+    await addLog(
+      `GPTSession2CPAandSub2API 已处理导出配置：${String(exportPayload?.outDir || buildAutoCompletedSessionExportPath('exports')).trim()}`,
+      'ok'
+    );
+  } catch (error) {
+    await addLog(`GPTSession2CPAandSub2API 配置生成失败：${getErrorMessage(error)}`, 'warn');
+  }
+}
+
 function isSignupPageHost(hostname = '') {
   if (typeof navigationUtils !== 'undefined' && navigationUtils?.isSignupPageHost) {
     return navigationUtils.isSignupPageHost(hostname);
@@ -11155,7 +11338,9 @@ async function reportCompletedStepSideEffectError(step, error) {
 async function runCompletedNodeSideEffects(nodeId, payload, completionState, lastNodeId) {
   await handleNodeData(nodeId, payload);
   if (nodeId === lastNodeId) {
-    await appendAndBroadcastAccountRunRecord('success', completionState);
+    const latestState = await getState();
+    await appendAndBroadcastAccountRunRecord('success', completionState || latestState);
+    await autoExportCompletedSessionArtifacts(latestState);
   }
 }
 

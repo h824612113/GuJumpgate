@@ -1804,16 +1804,20 @@ function FindProxyForURL(url, host) {
               ? await getState().catch(() => ({}))
               : {};
             const shouldRetryNonFreeTrial = Boolean(latestState?.autoRunRetryNonFreeTrial);
+            const isAutoRunContext = Number.isInteger(Number(latestState?.autoRunSessionId))
+              && Number(latestState.autoRunSessionId) > 0;
             const stopReason = normalizeNonFreeTrialLogMessage(message, {
               willRetry: shouldRetryNonFreeTrial,
             });
             await addLog(
               shouldRetryNonFreeTrial
                 ? `${stopReason} 无试用套餐自动重试已开启，将换新邮箱重走流程。`
-                : stopReason,
+                : (isAutoRunContext
+                  ? `${stopReason} 自动运行将把当前轮记为失败并继续后续轮次。`
+                  : stopReason),
               'warn'
             );
-            if (shouldRetryNonFreeTrial && typeof failNodeFromBackground === 'function') {
+            if ((shouldRetryNonFreeTrial || isAutoRunContext) && typeof failNodeFromBackground === 'function') {
               await failNodeFromBackground('plus-checkout-create', `PLUS_CHECKOUT_NON_FREE_TRIAL::${stopReason}`);
               return;
             }

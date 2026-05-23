@@ -5,6 +5,7 @@ import imaplib
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 import traceback
@@ -63,7 +64,10 @@ IMAP_HOST = "outlook.office365.com"
 IMAP_PORT = 993
 REQUEST_TIMEOUT_SECONDS = 45
 FETCH_LIMIT_DEFAULT = 5
+CONFIG_EXPORT_TIMEOUT_SECONDS = 120
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+GPT_SESSION_EXPORT_PROJECT_DIR = os.path.abspath("/Users/hanhao/Documents/freecodex/GPTSession2CPAandSub2API")
+DEFAULT_AUTO_EXPORT_ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "json"))
 ACCOUNT_LOG_PATH = os.path.join(BASE_DIR, "data", "account-run-history.txt")
 ACCOUNT_RECORDS_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "account-run-history.json")
 ACCOUNT_RECORDS_LOCK = threading.Lock()
@@ -237,6 +241,63 @@ def save_local_cpa_json(file_path, content, directory_path=""):
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(str(content or ""), encoding="utf-8")
     return str(target_path)
+
+
+
+def run_gpt_session_export_configs(input_dir, out_dir="", targets=""):
+    source_dir = Path(str(input_dir or "").strip()).expanduser()
+    if not str(source_dir):
+        raise RuntimeError("Missing inputDir")
+    if not source_dir.is_absolute():
+        raise RuntimeError("inputDir must be absolute")
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise RuntimeError(f"inputDir not found: {source_dir}")
+
+    project_dir = Path(GPT_SESSION_EXPORT_PROJECT_DIR).expanduser()
+    if not project_dir.exists() or not project_dir.is_dir():
+        raise RuntimeError(f"GPTSession2CPAandSub2API project not found: {project_dir}")
+
+    output_dir = Path(str(out_dir or "").strip()).expanduser() if str(out_dir or "").strip() else Path(DEFAULT_AUTO_EXPORT_ROOT_DIR) / "exports"
+    if not output_dir.is_absolute():
+        raise RuntimeError("outDir must be absolute")
+
+    script_path = project_dir / "scripts" / "export-configs.mjs"
+    if not script_path.exists():
+        raise RuntimeError(f"export-configs.mjs not found: {script_path}")
+
+    command = [
+        "node",
+        str(script_path),
+        str(source_dir),
+        "--out",
+        str(output_dir),
+    ]
+    normalized_targets = str(targets or "").strip()
+    if normalized_targets:
+        command.extend(["--targets", normalized_targets])
+
+    result = subprocess.run(
+        command,
+        cwd=str(project_dir),
+        capture_output=True,
+        text=True,
+        timeout=CONFIG_EXPORT_TIMEOUT_SECONDS,
+        check=False,
+    )
+    stdout = compact_text(result.stdout, limit=2000)
+    stderr = compact_text(result.stderr, limit=2000)
+    if result.returncode != 0:
+        detail = stderr or stdout or f"exit={result.returncode}"
+        raise RuntimeError(f"export-configs failed: {detail}")
+
+    manifest_path = output_dir / "manifest.json"
+    return {
+        "projectDir": str(project_dir),
+        "inputDir": str(source_dir),
+        "outDir": str(output_dir),
+        "manifestPath": str(manifest_path),
+        "stdout": stdout,
+    }
 
 
 def normalize_account_run_snapshot_record(record):
@@ -894,6 +955,18 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
                 json_response(self, 200, {
                     "ok": True,
                     "filePath": file_path,
+                })
+                return
+
+            if request_path == "/export-gpt-session-configs":
+                result = run_gpt_session_export_configs(
+                    payload.get("inputDir"),
+                    payload.get("outDir"),
+                    payload.get("targets"),
+                )
+                json_response(self, 200, {
+                    "ok": True,
+                    **result,
                 })
                 return
 
