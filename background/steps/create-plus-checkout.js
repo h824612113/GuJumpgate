@@ -74,6 +74,7 @@
     const {
       addLog: rawAddLog = async () => {},
       applyCheckoutScopedProxyFromUrl = null,
+      autoExportCompletedSessionArtifacts = null,
       broadcastDataUpdate = null,
       chrome,
       completeNodeFromBackground,
@@ -855,6 +856,7 @@ function FindProxyForURL(url, host) {
           usedAt: Math.max(0, Number(usage.usedAt) || 0),
           lastAttemptAt: Math.max(0, Number(usage.lastAttemptAt) || 0),
           lastError: String(usage.lastError || '').trim(),
+          rejected: Boolean(usage.rejected),
         }];
       }).filter(([key]) => Boolean(key)));
     }
@@ -901,8 +903,10 @@ function FindProxyForURL(url, host) {
             index: Number.isFinite(entry.index) ? entry.index : index,
             useCount: Math.max(0, Math.floor(Number(itemUsage.useCount) || 0)),
             usedAt: Math.max(0, Number(itemUsage.usedAt) || 0),
+            rejected: Boolean(itemUsage.rejected),
           };
         })
+        .filter((entry) => !entry.rejected)
         .sort((left, right) => {
           if (left.useCount !== right.useCount) {
             return left.useCount - right.useCount;
@@ -962,6 +966,7 @@ function FindProxyForURL(url, host) {
       const now = Date.now();
       const incrementUseCount = Boolean(options.incrementUseCount);
       const success = options.success === true;
+      const rejected = options.rejected === true ? true : Boolean(previous.rejected);
       const nextUsage = {
         ...usage,
         [normalizedEntry.key]: {
@@ -973,6 +978,7 @@ function FindProxyForURL(url, host) {
             : Math.max(0, Number(previous.usedAt) || 0),
           lastAttemptAt: now,
           lastError: success ? '' : String(options.error || '').trim(),
+          rejected,
         },
       };
       await applyHostedCheckoutRuntimePatch({
@@ -980,6 +986,43 @@ function FindProxyForURL(url, host) {
         hostedCheckoutSmsPoolUsage: nextUsage,
       });
       return nextUsage;
+    }
+
+    async function rejectHostedCheckoutCurrentSmsEntry(reason = '') {
+      const state = typeof getState === 'function' ? await getState().catch(() => ({})) : {};
+      const entries = parseHostedCheckoutSmsPoolEntries(state?.hostedCheckoutSmsPoolText || '');
+      const currentEntry = normalizeHostedCheckoutCurrentSmsEntry(state?.hostedCheckoutCurrentSmsEntry, entries);
+      if (!currentEntry?.key) {
+        return {
+          rejectedEntry: null,
+          nextEntry: null,
+        };
+      }
+
+      const error = String(reason || 'PayPal 要求更换手机号。').trim();
+      const nextUsage = await updateHostedCheckoutPoolUsage(currentEntry, {
+        success: false,
+        rejected: true,
+        error,
+      });
+      const nextEntry = chooseHostedCheckoutSmsPoolEntry(entries, nextUsage);
+      const finalUsage = nextEntry
+        ? await updateHostedCheckoutPoolUsage(nextEntry, {
+            incrementUseCount: true,
+            success: true,
+          })
+        : nextUsage;
+      if (!nextEntry) {
+        await applyHostedCheckoutRuntimePatch({
+          hostedCheckoutCurrentSmsEntry: null,
+        });
+      }
+      return {
+        rejectedEntry: currentEntry,
+        nextEntry,
+        rejectedCount: Object.values(finalUsage || {}).filter((item) => item?.rejected).length,
+        totalCount: entries.length,
+      };
     }
 
     async function getHostedCheckoutRuntimeConfig(options = {}) {
@@ -1650,6 +1693,28 @@ function FindProxyForURL(url, host) {
         }
 
         const pageState = await getHostedCheckoutPayPalState(tabId);
+        if (pageState.hostedPhoneRejected || pageState.hostedStage === 'phone_rejected') {
+          const rejectionMessage = String(pageState.hostedPhoneRejectedMessage || 'PayPal 要求更换手机号。').trim();
+          const rotation = await rejectHostedCheckoutCurrentSmsEntry(rejectionMessage);
+          if (!rotation?.rejectedEntry) {
+            throw new Error(`步骤 6：PayPal 提示手机号不可用，但当前没有可切换的号码池号码。${rejectionMessage}`);
+          }
+          await addLog(
+            `步骤 6：PayPal 拒绝号码 ${rotation.rejectedEntry.phone}：${rejectionMessage}`,
+            'warn'
+          );
+          await runHostedCheckoutPayPalStep(tabId, {
+            dismissPhoneRejected: true,
+          });
+          if (!rotation.nextEntry) {
+            throw new Error(`步骤 6：PayPal 号码池已耗尽，${rotation.rejectedCount || 0}/${rotation.totalCount || 0} 个号码不可用，请补充新号码后重试。`);
+          }
+          hostedVerificationSubmitted = false;
+          loggedWaitingForHostedVerificationResult = false;
+          await addLog(`步骤 6：正在从 PayPal 号码池切换到下一个号码 ${rotation.nextEntry.phone} 后重试。`, 'info');
+          await sleepWithStop(1000);
+          continue;
+        }
         if (pageState.hostedStage === 'generic_error' || pageState.hostedGenericError) {
           await requestHostedCheckoutGenericErrorChoice(tabId, pageState);
           return;
@@ -1822,6 +1887,27 @@ function FindProxyForURL(url, host) {
               'warn'
             );
             if ((shouldRetryNonFreeTrial || isAutoRunContext) && typeof failNodeFromBackground === 'function') {
+              if (!shouldRetryNonFreeTrial && isAutoRunContext && typeof autoExportCompletedSessionArtifacts === 'function') {
+                await setState({
+                  plusCheckoutUrl: '',
+                  plusReturnUrl: '',
+                  plusCheckoutSource: 'non-free-trial-free-account-fallback',
+                  plusCheckoutNonFreeTrialFallback: true,
+                  plusCheckoutNonFreeTrialFallbackAt: Date.now(),
+                  plusCheckoutNonFreeTrialReason: stopReason,
+                });
+                const exportState = typeof getState === 'function'
+                  ? await getState().catch(() => latestState)
+                  : latestState;
+                await addLog('Step 6: no free trial eligibility; exporting current Free account configs before continuing.', 'warn');
+                await autoExportCompletedSessionArtifacts(exportState);
+                await completeNodeFromBackground('plus-checkout-create', {
+                  plusCheckoutSource: 'non-free-trial-free-account-fallback',
+                  plusCheckoutNonFreeTrialFallback: true,
+                  plusCheckoutNonFreeTrialReason: stopReason,
+                });
+                return;
+              }
               await failNodeFromBackground('plus-checkout-create', `PLUS_CHECKOUT_NON_FREE_TRIAL::${stopReason}`);
               return;
             }

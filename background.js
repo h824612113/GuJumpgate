@@ -8806,14 +8806,20 @@ function getAutoCompletedSessionExportDateStamp(now = new Date()) {
   return `${date.getFullYear()}${pad(date.getMonth() + 1)}${pad(date.getDate())}`;
 }
 
+function resolveAutoCompletedSessionExportRootDir(state = {}) {
+  return String(state?.localCpaJsonPluginDir || '').trim()
+    || AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR;
+}
+
 function buildAutoCompletedSessionExportPath(directoryName = '', fileName = '', options = {}) {
+  const rootDir = String(options?.rootDir || AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR).trim();
   const dateStamp = sanitizeAutoCompletedSessionExportPathSegment(
     options?.dateStamp || getAutoCompletedSessionExportDateStamp(options?.now || new Date())
   );
   const normalizedDirectoryName = sanitizeAutoCompletedSessionExportPathSegment(directoryName || '');
   const normalizedFileName = sanitizeAutoCompletedSessionExportPathSegment(fileName || '');
   const parts = [
-    AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR,
+    rootDir,
     normalizedDirectoryName,
     dateStamp,
     normalizedFileName,
@@ -8870,8 +8876,9 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
   }
 
   const helperBaseUrl = normalizeHotmailLocalBaseUrl(state?.hotmailLocalBaseUrl);
+  const exportRootDir = resolveAutoCompletedSessionExportRootDir(state);
   if (!helperBaseUrl) {
-    await addLog(`自动导出 JSON 已跳过：未配置本地助手地址，目标目录 ${AUTO_COMPLETED_SESSION_EXPORT_ROOT_DIR}。`, 'warn');
+    await addLog(`自动导出 JSON 已跳过：未配置本地助手地址，目标目录 ${exportRootDir}。`, 'warn');
     return;
   }
 
@@ -8898,8 +8905,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     const cpaContent = `${JSON.stringify(sessionAuth.authJson, null, 2)}
 `;
 
-    const localCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, '', { dateStamp: exportDateStamp });
-    const localCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, sessionAuth.fileName, { dateStamp: exportDateStamp });
+    const localCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, '', { dateStamp: exportDateStamp, rootDir: exportRootDir });
+    const localCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, sessionAuth.fileName, { dateStamp: exportDateStamp, rootDir: exportRootDir });
     const localCpaSavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
       directoryPath: localCpaDir,
       filePath: localCpaPath,
@@ -8907,8 +8914,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     });
     savedPaths.push(`本地CPA=${localCpaSavedPath}`);
 
-    const sessionCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, '', { dateStamp: exportDateStamp });
-    const sessionCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, sessionAuth.fileName, { dateStamp: exportDateStamp });
+    const sessionCpaDir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, '', { dateStamp: exportDateStamp, rootDir: exportRootDir });
+    const sessionCpaPath = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, sessionAuth.fileName, { dateStamp: exportDateStamp, rootDir: exportRootDir });
     const sessionCpaSavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
       directoryPath: sessionCpaDir,
       filePath: sessionCpaPath,
@@ -8935,8 +8942,8 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
       'chatgpt-session'
     );
     const fileName = `sub2api-${email}.json`;
-    const sessionSub2Dir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, '', { dateStamp: exportDateStamp });
-    const sessionSub2Path = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, fileName, { dateStamp: exportDateStamp });
+    const sessionSub2Dir = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, '', { dateStamp: exportDateStamp, rootDir: exportRootDir });
+    const sessionSub2Path = buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, fileName, { dateStamp: exportDateStamp, rootDir: exportRootDir });
     const sessionSub2SavedPath = await saveAutoCompletedSessionExportFile(helperBaseUrl, {
       directoryPath: sessionSub2Dir,
       filePath: sessionSub2Path,
@@ -8966,11 +8973,11 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
       },
       body: JSON.stringify({
         inputDirs: [
-          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, '', { dateStamp: exportDateStamp }),
-          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, '', { dateStamp: exportDateStamp }),
-          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, '', { dateStamp: exportDateStamp }),
+          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_LOCAL_CPA_DIR, '', { dateStamp: exportDateStamp, rootDir: exportRootDir }),
+          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_CPA_DIR, '', { dateStamp: exportDateStamp, rootDir: exportRootDir }),
+          buildAutoCompletedSessionExportPath(AUTO_COMPLETED_SESSION_EXPORT_SESSION_SUB2_DIR, '', { dateStamp: exportDateStamp, rootDir: exportRootDir }),
         ],
-        outDir: buildAutoCompletedSessionExportPath('exports', '', { dateStamp: exportDateStamp }),
+        outDir: buildAutoCompletedSessionExportPath('exports', '', { dateStamp: exportDateStamp, rootDir: exportRootDir }),
         targets: 'cpa,sub2api,cockpit,9router',
       }),
     });
@@ -8987,7 +8994,7 @@ async function autoExportCompletedSessionArtifacts(state = {}) {
     }
 
     await addLog(
-      `GPTSession2CPAandSub2API 已处理导出配置：${String(exportPayload?.outDir || buildAutoCompletedSessionExportPath('exports', '', { dateStamp: exportDateStamp })).trim()}`,
+      `GPTSession2CPAandSub2API 已处理导出配置：${String(exportPayload?.outDir || buildAutoCompletedSessionExportPath('exports', '', { dateStamp: exportDateStamp, rootDir: exportRootDir })).trim()}`,
       'ok'
     );
   } catch (error) {
@@ -13971,6 +13978,7 @@ const step8Executor = self.MultiPageBackgroundStep8?.createStep8Executor({
 });
 const plusCheckoutCreateExecutor = self.MultiPageBackgroundPlusCheckoutCreate?.createPlusCheckoutCreateExecutor({
   addLog,
+  autoExportCompletedSessionArtifacts,
   broadcastDataUpdate,
   chrome,
   completeNodeFromBackground,

@@ -11,6 +11,7 @@ const PAYPAL_HOSTED_STAGE_VERIFICATION = 'verification';
 const PAYPAL_HOSTED_STAGE_REVIEW = 'review_consent';
 const PAYPAL_HOSTED_STAGE_APPROVAL = 'approval';
 const PAYPAL_HOSTED_STAGE_GENERIC_ERROR = 'generic_error';
+const PAYPAL_HOSTED_STAGE_PHONE_REJECTED = 'phone_rejected';
 const PAYPAL_HOSTED_STAGE_UNKNOWN = 'unknown';
 const PAYPAL_HOSTED_HERMES_AUTORUN_SENTINEL = '__MULTIPAGE_PAYPAL_HOSTED_HERMES_AUTORUN__';
 const PAYPAL_HOSTED_GUEST_SUBMIT_SENTINEL = '__MULTIPAGE_PAYPAL_HOSTED_GUEST_SUBMIT__';
@@ -299,6 +300,43 @@ function getPayPalHostedGenericErrorMessage() {
   return match ? match[0] : '';
 }
 
+function getPayPalHostedPhoneRejectedMessage() {
+  const bodyText = normalizeText(document.body?.innerText || '');
+  const hasUnableRequest = /we[’']?re\s+unable\s+to\s+complete\s+your\s+request/i.test(bodyText);
+  const hasDifferentPhone = /try\s+a\s+different\s+phone\s+number/i.test(bodyText);
+  if (hasUnableRequest && hasDifferentPhone) {
+    return 'We’re unable to complete your request. Try a different phone number.';
+  }
+  return '';
+}
+
+function findHostedPhoneRejectedDismissButton() {
+  if (!getPayPalHostedPhoneRejectedMessage()) {
+    return null;
+  }
+  return findClickableByText([
+    /^ok$/i,
+    /close|dismiss/i,
+    /确定|关闭/i,
+  ]) || getVisibleControls('button').find((button) => /ok/i.test(getActionText(button))) || null;
+}
+
+async function dismissHostedPhoneRejectedDialog() {
+  const button = findHostedPhoneRejectedDismissButton();
+  if (button && isEnabledControl(button)) {
+    simulateClick(button);
+    await sleep(500);
+    return {
+      dismissed: true,
+      message: getPayPalHostedPhoneRejectedMessage(),
+    };
+  }
+  return {
+    dismissed: false,
+    message: getPayPalHostedPhoneRejectedMessage(),
+  };
+}
+
 function isPayPalHostedGenericErrorPage() {
   const pathname = getPayPalHostedPathname();
   const bodyText = normalizeText(document.body?.innerText || '');
@@ -363,6 +401,9 @@ function findHostedReviewConsentButton() {
 function detectPayPalHostedCheckoutStage() {
   if (!/paypal\./i.test(String(location?.host || ''))) {
     return PAYPAL_HOSTED_STAGE_OUTSIDE;
+  }
+  if (getPayPalHostedPhoneRejectedMessage()) {
+    return PAYPAL_HOSTED_STAGE_PHONE_REJECTED;
   }
   if (isPayPalHostedGenericErrorPage()) {
     return PAYPAL_HOSTED_STAGE_GENERIC_ERROR;
@@ -822,6 +863,20 @@ async function clickHostedReviewConsent() {
 }
 
 async function runHostedCheckoutStep(payload = {}) {
+  if (detectPayPalHostedCheckoutStage() === PAYPAL_HOSTED_STAGE_PHONE_REJECTED) {
+    if (payload.dismissPhoneRejected) {
+      return {
+        stage: PAYPAL_HOSTED_STAGE_PHONE_REJECTED,
+        ...(await dismissHostedPhoneRejectedDialog()),
+      };
+    }
+    return {
+      stage: PAYPAL_HOSTED_STAGE_PHONE_REJECTED,
+      submitted: false,
+      phoneRejected: true,
+      message: getPayPalHostedPhoneRejectedMessage(),
+    };
+  }
   if (isPayPalHostedReviewPage()) {
     return clickHostedReviewConsent();
   }
@@ -1119,6 +1174,8 @@ function inspectPayPalState() {
     url: location.href,
     readyState: document.readyState,
     hostedStage,
+    hostedPhoneRejected: hostedStage === PAYPAL_HOSTED_STAGE_PHONE_REJECTED,
+    hostedPhoneRejectedMessage: getPayPalHostedPhoneRejectedMessage(),
     needsLogin: Boolean(loginPhase),
     loginPhase,
     hasEmailInput: Boolean(emailInput),

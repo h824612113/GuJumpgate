@@ -1,0 +1,3 @@
+[submodule "services/GPTSession2CPAandSub2API"]
+	path = services/GPTSession2CPAandSub2API
+	url = https://github.com/gtxx3600/GPTSession2CPAandSub2API.git

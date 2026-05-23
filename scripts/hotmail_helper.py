@@ -66,7 +66,10 @@ REQUEST_TIMEOUT_SECONDS = 45
 FETCH_LIMIT_DEFAULT = 5
 CONFIG_EXPORT_TIMEOUT_SECONDS = 120
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-GPT_SESSION_EXPORT_PROJECT_DIR = os.path.abspath("/Users/hanhao/Documents/freecodex/GPTSession2CPAandSub2API")
+DEFAULT_GPT_SESSION_EXPORT_PROJECT_DIR = os.path.abspath(os.path.join(BASE_DIR, "services", "GPTSession2CPAandSub2API"))
+GPT_SESSION_EXPORT_PROJECT_DIR = os.path.abspath(
+    os.environ.get("GPT_SESSION_EXPORT_PROJECT_DIR") or DEFAULT_GPT_SESSION_EXPORT_PROJECT_DIR
+)
 DEFAULT_AUTO_EXPORT_ROOT_DIR = os.path.abspath(os.path.join(BASE_DIR, "data", "json"))
 ACCOUNT_LOG_PATH = os.path.join(BASE_DIR, "data", "account-run-history.txt")
 ACCOUNT_RECORDS_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "account-run-history.json")
@@ -277,6 +280,8 @@ def run_gpt_session_export_configs(input_dir, out_dir="", targets="", input_dirs
 
     script_path = project_dir / "scripts" / "export-configs.mjs"
     if not script_path.exists():
+        script_path = Path(BASE_DIR) / "scripts" / "gpt-session-export-configs.mjs"
+    if not script_path.exists():
         raise RuntimeError(f"export-configs.mjs not found: {script_path}")
 
     command = [
@@ -293,6 +298,7 @@ def run_gpt_session_export_configs(input_dir, out_dir="", targets="", input_dirs
     result = subprocess.run(
         command,
         cwd=str(project_dir),
+        env={**os.environ, "GPT_SESSION_EXPORT_PROJECT_DIR": str(project_dir)},
         capture_output=True,
         text=True,
         timeout=CONFIG_EXPORT_TIMEOUT_SECONDS,
