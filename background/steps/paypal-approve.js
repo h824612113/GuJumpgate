@@ -6,6 +6,8 @@
   const PAYPAL_INJECT_FILES = ['content/utils.js', 'content/operation-delay.js', 'content/paypal-flow.js'];
   const PAYPAL_LOGIN_TRANSITION_TIMEOUT_MS = 30000;
   const PAYPAL_LOGIN_TRANSITION_POLL_MS = 500;
+  const PAYPAL_HUMAN_VERIFICATION_WAIT_TIMEOUT_MS = 10 * 60 * 1000;
+  const PAYPAL_HUMAN_VERIFICATION_POLL_MS = 1000;
 
   function createPayPalApproveExecutor(deps = {}) {
     const {
@@ -229,6 +231,40 @@
       return Boolean(result?.clicked);
     }
 
+    async function waitForHumanVerificationResolved(tabId) {
+      const startedAt = Date.now();
+      await addLog('步骤 8：检测到 PayPal 人机验证/滑块页，已暂停自动操作，等待人工完成后自动继续...', 'warn');
+      while (Date.now() - startedAt < PAYPAL_HUMAN_VERIFICATION_WAIT_TIMEOUT_MS) {
+        const tab = await chrome.tabs.get(tabId).catch(() => null);
+        if (!tab) {
+          throw new Error('步骤 8：PayPal 标签页已关闭，人工验证等待已中断。');
+        }
+
+        const currentUrl = tab.url || '';
+        if (currentUrl && !isPayPalUrl(currentUrl)) {
+          return {
+            resolved: true,
+            leftPayPal: true,
+            pageState: null,
+          };
+        }
+
+        await ensurePayPalReady(tabId, '步骤 8：等待你完成人机验证后恢复自动执行...');
+        const pageState = await getPayPalState(tabId);
+        if (!pageState?.humanVerificationRequired) {
+          return {
+            resolved: true,
+            leftPayPal: false,
+            pageState,
+          };
+        }
+
+        await sleepWithStop(PAYPAL_HUMAN_VERIFICATION_POLL_MS);
+      }
+
+      throw new Error('步骤 8：PayPal 人机验证等待超时，请手动完成后重新执行或继续当前步骤。');
+    }
+
     async function executePayPalApprove(state = {}) {
       const tabId = await resolvePayPalTabId(state);
       await ensurePayPalReady(tabId);
@@ -244,6 +280,17 @@
 
         await ensurePayPalReady(tabId, '步骤 8：PayPal 页面正在切换，等待脚本重新就绪...');
         const pageState = await getPayPalState(tabId);
+
+        if (pageState.humanVerificationRequired) {
+          const decision = await waitForHumanVerificationResolved(tabId);
+          if (decision.leftPayPal) {
+            await addLog('步骤 8：人工完成 PayPal 人机验证后，页面已跳转离开 PayPal，继续进入回跳确认。', 'ok');
+            break;
+          }
+          await addLog('步骤 8：已检测到 PayPal 人机验证解除，恢复自动执行。', 'ok');
+          loggedWaiting = false;
+          continue;
+        }
 
         if (pageState.needsLogin) {
           const submitResult = await submitLogin(tabId, state);

@@ -1682,7 +1682,11 @@ function FindProxyForURL(url, host) {
             await sleepWithStop(1000);
             continue;
           }
-          await addLog('步骤 6：检测到 PayPal hosted checkout 验证码弹窗，正在获取并填写验证码...', 'info');
+          await addLog('步骤 6：检测到 PayPal hosted checkout 验证码弹窗，先点击 Resend 再获取并填写验证码...', 'info');
+          await runHostedCheckoutPayPalStep(tabId, {
+            resendVerificationCode: true,
+          });
+          await addLog('步骤 6：已触发 PayPal 验证码 Resend，等待弹窗延迟后重新获取验证码...', 'info');
           await waitForHostedCheckoutVerificationPopupDelay();
           const verificationCode = await pollHostedCheckoutVerificationCode();
           await runHostedCheckoutPayPalStep(tabId, {

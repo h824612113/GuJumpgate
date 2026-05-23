@@ -257,6 +257,14 @@ function findHostedAccountCreateEmailContinueButton() {
   ]);
 }
 
+function findHostedCreateAccountButton() {
+  const direct = getVisibleControls('button[type="submit"], button, [role="button"], a').find((el) => {
+    const text = getActionText(el);
+    return /create\s+an?\s+account|create\s+account/i.test(text);
+  });
+  return direct && isEnabledControl(direct) ? direct : null;
+}
+
 function isPayPalHostedAccountCreateEmailPage() {
   const bodyText = normalizeText(document.body?.innerText || '');
   const emailInput = document.getElementById('email') || findEmailInput();
@@ -601,6 +609,18 @@ function normalizeHostedVerificationCode(value = '') {
 async function submitHostedPayLogin(payload = {}) {
   await waitForDocumentComplete();
   removeHostedCaptchaArtifacts();
+  const createAccountButton = findHostedCreateAccountButton();
+  if (createAccountButton) {
+    dispatchHostedGenericClick(createAccountButton);
+    await sleep(1000);
+    removeHostedCaptchaArtifacts();
+    return {
+      stage: PAYPAL_HOSTED_STAGE_LOGIN,
+      submitted: true,
+      clickedCreateAccount: true,
+      nextExpected: 'account_create_email_or_guest_checkout',
+    };
+  }
   const email = normalizeText(payload.email || buildHostedRandomEmail());
   if (!email) {
     throw new Error('PayPal hosted checkout 缺少邮箱。');
@@ -896,6 +916,31 @@ function hasPasskeyPrompt() {
   return findPasskeyPromptButtons().length > 0;
 }
 
+function getHumanVerificationState() {
+  const titleText = normalizeText(document.title || '');
+  const bodyText = normalizeText(document.body?.innerText || '');
+  const combinedText = normalizeText(`${titleText} ${bodyText}`);
+  const hasDataDomeCaptcha = Boolean(
+    document.getElementById('ddv1-captcha-container')
+    || document.getElementById('captcha__puzzle__button')
+    || document.getElementById('captcha__audio__button')
+    || document.querySelector('[data-dd-request-id]')
+  );
+  const hasDataDomeBlockText = /你被封锁了|完成验证|确认您是人类|将滑块完全向右移动|slider loaded|audio verification/i.test(combinedText);
+  if (hasDataDomeCaptcha || hasDataDomeBlockText) {
+    return {
+      required: true,
+      type: hasDataDomeCaptcha ? 'datadome_slider' : 'datadome_block',
+      message: (combinedText || titleText || bodyText).slice(0, 240),
+    };
+  }
+  return {
+    required: false,
+    type: '',
+    message: '',
+  };
+}
+
 function getPayPalLoginPhase(emailInput, passwordInput) {
   const emailNextButton = findEmailNextButton();
   const passwordLoginButton = findPasswordLoginButton();
@@ -1069,6 +1114,7 @@ function inspectPayPalState() {
   const approveButton = findApproveButton();
   const loginPhase = getPayPalLoginPhase(emailInput, passwordInput);
   const hostedStage = detectPayPalHostedCheckoutStage();
+  const humanVerificationState = getHumanVerificationState();
   return {
     url: location.href,
     readyState: document.readyState,
@@ -1090,6 +1136,9 @@ function inspectPayPalState() {
     approveReady: Boolean(approveButton && isEnabledControl(approveButton)),
     approveButtonText: approveButton ? getActionText(approveButton) : '',
     hasPasskeyPrompt: hasPasskeyPrompt(),
+    humanVerificationRequired: Boolean(humanVerificationState.required),
+    humanVerificationType: humanVerificationState.type || '',
+    humanVerificationMessage: humanVerificationState.message || '',
     bodyTextPreview: normalizeText(document.body?.innerText || '').slice(0, 240),
   };
 }
