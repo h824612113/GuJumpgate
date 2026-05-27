@@ -471,13 +471,28 @@
       }
     }
 
+    async function clearOAuthDeadlineForPhoneVerification(visibleStep, pageState = {}) {
+      if (typeof setState !== 'function') {
+        return;
+      }
+      await setState({
+        oauthFlowDeadlineAt: null,
+        oauthFlowDeadlineSourceUrl: null,
+      });
+      await addLog(
+        `步骤 ${visibleStep}：认证页已进入 ${pageState?.state === 'phone_verification_page' ? '手机验证码页' : '添加手机号页'}，清理旧 OAuth 总超时，继续执行手机号验证。`,
+        'info',
+        { step: visibleStep, stepKey: activeFetchLoginCodeStepKey || 'post-login-phone-verification' }
+      );
+    }
+
     async function executePostLoginPhoneVerification(state, runtime = {}) {
       const visibleStep = getVisibleStep(state, 9);
       activeFetchLoginCodeStep = visibleStep;
       activeFetchLoginCodeStepKey = runtime.stepKey || 'post-login-phone-verification';
       const authTabId = await ensureAuthTabForPostLoginStep(state, visibleStep);
       const pageState = await getLoginAuthStateFromContent(visibleStep, {
-        timeoutMs: await getStep8ReadyTimeoutMs('确认手机号验证页或 OAuth 授权页已就绪', state?.oauthUrl || '', visibleStep),
+        timeoutMs: 15000,
         logMessage: `步骤 ${visibleStep}：正在确认是否需要手机号验证...`,
         logStepKey: activeFetchLoginCodeStepKey,
       });
@@ -492,6 +507,7 @@
       if (pageState?.state !== 'add_phone_page' && pageState?.state !== 'phone_verification_page') {
         throw new Error(`步骤 ${visibleStep}：手机号验证步骤只处理添加手机号页或手机验证码页，当前状态：${pageState?.state || 'unknown'}。URL: ${pageState?.url || ''}`.trim());
       }
+      await clearOAuthDeadlineForPhoneVerification(visibleStep, pageState);
       if (!state?.phoneVerificationEnabled) {
         throw new Error(`步骤 ${visibleStep}：检测到需要手机号验证，但手机接码未开启。URL: ${pageState?.url || ''}`.trim());
       }
