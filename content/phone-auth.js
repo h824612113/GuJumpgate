@@ -24,6 +24,7 @@
     const PHONE_RESEND_SERVER_ERROR_PREFIX = 'PHONE_RESEND_SERVER_ERROR::';
     const STEP9_WHATSAPP_PAGE_RESTART_ERROR_PREFIX = 'STEP9_WHATSAPP_PAGE_RESTART::';
     const PHONE_MAX_USAGE_EXCEEDED_PATTERN = /phone_max_usage_exceeded/i;
+    const PHONE_NUMBER_USED_PATTERN = /phone_number_in_use|phone_max_usage_exceeded|already\s+(?:linked|associated)\s+to\s+the\s+maximum\s+number\s+of\s+accounts|associated\s+with\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*(?:已|被).*(?:使用|占用|绑定|注册|关联)|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*关联.*(?:最多|最大|上限).*(?:账户|账号)/i;
     const PHONE_ROUTE_405_RECOVERY_FAILED_ERROR_PREFIX = 'PHONE_ROUTE_405_RECOVERY_FAILED::';
     const PHONE_ROUTE_405_RECOVERY_COOLDOWN_MS = 6000;
     const PHONE_RESEND_ROUTE_405_MAX_RECOVERIES = 2;
@@ -860,9 +861,6 @@
 
     function getPhoneVerificationInlineMessages() {
       const form = getPhoneVerificationForm();
-      if (!form) {
-        return [];
-      }
       const messages = [];
       const selectors = [
         '.react-aria-FieldError',
@@ -872,8 +870,27 @@
         '[aria-invalid="true"] + *',
         '[class*="error"]',
       ];
-      for (const selector of selectors) {
-        form.querySelectorAll(selector).forEach((element) => {
+      const roots = [
+        form,
+        document.querySelector('main'),
+        document.body,
+      ].filter(Boolean);
+      const seen = new Set();
+      for (const root of roots) {
+        if (seen.has(root)) {
+          continue;
+        }
+        seen.add(root);
+        for (const selector of selectors) {
+          root.querySelectorAll(selector).forEach((element) => {
+            const text = String(element?.textContent || '').replace(/\s+/g, ' ').trim();
+            if (text) {
+              messages.push(text);
+            }
+          });
+        }
+        const roleAlert = root.querySelectorAll('[role="alert"], [aria-live]');
+        roleAlert.forEach((element) => {
           const text = String(element?.textContent || '').replace(/\s+/g, ' ').trim();
           if (text) {
             messages.push(text);
@@ -885,6 +902,23 @@
         messages.push(verificationError);
       }
       return messages;
+    }
+
+    function getPhoneNumberUsedErrorText() {
+      const inlineMatch = getPhoneVerificationInlineMessages()
+        .find((text) => PHONE_NUMBER_USED_PATTERN.test(text));
+      if (inlineMatch) {
+        return inlineMatch;
+      }
+
+      const pageSnapshot = String(getPageTextSnapshot?.() || '').replace(/\s+/g, ' ').trim();
+      if (pageSnapshot && PHONE_NUMBER_USED_PATTERN.test(pageSnapshot)) {
+        const concise = pageSnapshot.match(
+          /phone_number_in_use|phone_max_usage_exceeded|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)[^.。!?]*[.。!?]?|already\s+(?:linked|associated)[^.。!?]*[.。!?]?|not\s+eligible\s+to\s+be\s+used[^.。!?]*[.。!?]?|cannot\s+be\s+used\s+for\s+verification[^.。!?]*[.。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*(?:已|被)[^。!?]*(?:使用|占用|绑定|注册|关联)[^。!?]*[。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*关联[^。!?]*(?:最多|最大|上限)[^。!?]*(?:账户|账号)[^。!?]*[。!?]?/i
+        );
+        return String(concise?.[0] || pageSnapshot).trim();
+      }
+      return '';
     }
 
     function getPhoneResendThrottleText() {
@@ -940,6 +974,16 @@
           hasError: true,
           reason: 'phone_max_usage_exceeded',
           message: maxUsageText,
+          url: location.href,
+        };
+      }
+
+      const usedNumberText = getPhoneNumberUsedErrorText();
+      if (usedNumberText) {
+        return {
+          hasError: true,
+          reason: 'phone_number_used',
+          message: usedNumberText,
           url: location.href,
         };
       }
@@ -1190,6 +1234,16 @@
           continue;
         }
 
+        const usedNumberText = getPhoneNumberUsedErrorText();
+        if (usedNumberText) {
+          return {
+            invalidCode: true,
+            errorText: usedNumberText,
+            phoneNumberUsed: true,
+            url: location.href,
+          };
+        }
+
         const errorText = getVerificationErrorText();
         if (errorText) {
           return {
@@ -1239,6 +1293,15 @@
       }
 
       await waitForPhoneVerificationReady();
+      const usedNumberText = getPhoneNumberUsedErrorText();
+      if (usedNumberText) {
+        return {
+          invalidCode: true,
+          errorText: usedNumberText,
+          phoneNumberUsed: true,
+          url: location.href,
+        };
+      }
       const codeInput = getPhoneVerificationCodeInput() || await waitForElement(
         'input[name="code"], input[autocomplete="one-time-code"], input[inputmode="numeric"]',
         10000

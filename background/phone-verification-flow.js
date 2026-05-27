@@ -6997,6 +6997,9 @@
                 if (pageError?.reason === 'phone_max_usage_exceeded') {
                   throw buildPhoneMaxUsageExceededError(pageError.message);
                 }
+                if (pageError?.reason === 'phone_number_used') {
+                  throw buildPhoneMaxUsageExceededError(pageError.message || 'OpenAI 提示手机号已被占用。');
+                }
                 if (pageError?.reason === 'resend_server_error') {
                   throw buildPhoneResendServerError(pageError.message);
                 }
@@ -7037,14 +7040,14 @@
             }
             if (isPhoneMaxUsageExceededFlowError(error)) {
               await addLog(
-                `步骤 9：OpenAI 提示号码 ${normalizedActivation.phoneNumber} 达到使用上限，立即更换号码。${error.message}`,
+                `步骤 9：OpenAI 提示号码 ${normalizedActivation.phoneNumber} 已被占用或达到使用上限，立即标记不可用并更换号码。${error.message}`,
                 'warn'
               );
               await clearPhoneRuntimeCountdown();
               return {
                 code: '',
                 replaceNumber: true,
-                reason: 'phone_max_usage_exceeded',
+                reason: isPhoneNumberUsedError(error) ? 'phone_number_used' : 'phone_max_usage_exceeded',
               };
             }
             if (isPhoneResendServerError(error)) {
