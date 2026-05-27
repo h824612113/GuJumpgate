@@ -236,12 +236,12 @@
       : '验证码接口暂未返回有效验证码。';
   }
 
-  function chooseEntry(entries = [], usage = {}) {
+  function chooseEntry(entries = [], usage = {}, currentEntry = null) {
     if (!Array.isArray(entries) || entries.length === 0) {
       return null;
     }
     const normalizedUsage = normalizeUsage(usage);
-    return entries
+    const selectableEntries = entries
       .map((entry, index) => {
         const itemUsage = normalizedUsage[entry.key] || {};
         return {
@@ -252,7 +252,18 @@
           enabled: itemUsage.enabled !== false,
         };
       })
-      .filter((entry) => entry.enabled && entry.useCount < MAX_SUCCESS_USES)
+      .filter((entry) => entry.enabled && entry.useCount < MAX_SUCCESS_USES);
+    const normalizedCurrent = parsePoolKey(
+      currentEntry?.key
+      || buildPoolKey(currentEntry?.phone, currentEntry?.verificationUrl)
+    );
+    if (normalizedCurrent?.key) {
+      const currentSelectableEntry = selectableEntries.find((entry) => entry.key === normalizedCurrent.key);
+      if (currentSelectableEntry) {
+        return currentSelectableEntry;
+      }
+    }
+    return selectableEntries
       .sort((left, right) => {
         if (left.useCount !== right.useCount) {
           return left.useCount - right.useCount;
@@ -386,7 +397,7 @@
     async function requestActivation(state = {}, _options = {}) {
       const entries = parseEntries(state?.[POOL_TEXT_KEY] || '');
       const usage = normalizeUsage(state?.[POOL_USAGE_KEY] || {});
-      const selectedEntry = chooseEntry(entries, usage);
+      const selectedEntry = chooseEntry(entries, usage, state?.[CURRENT_ENTRY_KEY]);
       if (!selectedEntry) {
         const enabledEntries = entries.filter((entry) => (usage?.[entry.key] || {}).enabled !== false);
         const exhaustedEntries = enabledEntries.filter((entry) => (

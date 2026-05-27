@@ -5,6 +5,8 @@
 console.log('[MultiPage:signup-page] Content script loaded on', location.href);
 
 const SIGNUP_PAGE_LISTENER_SENTINEL = 'data-multipage-signup-page-listener';
+const SIGNUP_PAGE_LISTENER_VERSION_SENTINEL = 'data-multipage-signup-page-listener-version';
+const SIGNUP_PAGE_LISTENER_VERSION = '20260527-phone-code';
 
 function getOperationDelayRunner() {
   const rootScope = typeof window !== 'undefined' ? window : globalThis;
@@ -14,8 +16,9 @@ function getOperationDelayRunner() {
     : async (_metadata, operation) => operation();
 }
 
-if (document.documentElement.getAttribute(SIGNUP_PAGE_LISTENER_SENTINEL) !== '1') {
+if (document.documentElement.getAttribute(SIGNUP_PAGE_LISTENER_VERSION_SENTINEL) !== SIGNUP_PAGE_LISTENER_VERSION) {
   document.documentElement.setAttribute(SIGNUP_PAGE_LISTENER_SENTINEL, '1');
+  document.documentElement.setAttribute(SIGNUP_PAGE_LISTENER_VERSION_SENTINEL, SIGNUP_PAGE_LISTENER_VERSION);
 
   // Listen for commands from Background
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -2664,8 +2667,8 @@ async function step3_fillEmailPassword(payload) {
         const gate = rootScope?.CodexOperationDelay?.performOperationWithDelay;
         return typeof gate === 'function' ? gate(metadata, operation) : operation();
       };
-  const { email, password } = payload;
-  if (!password) throw new Error('未提供密码，步骤 3 需要可用密码。');
+  const { email } = payload;
+  const password = resolveSignupPasswordValue(payload);
   const normalizedEmail = String(email || '').trim().toLowerCase();
   const accountIdentifierType = String(payload?.accountIdentifierType || '').trim().toLowerCase() === 'phone'
     ? 'phone'
@@ -2732,12 +2735,23 @@ async function step3_fillEmailPassword(payload) {
   });
   log('步骤 3：密码已填写');
 
-  const submitBtn = snapshot.submitButton
-    || getSignupPasswordSubmitButton({ allowDisabled: true })
-    || await waitForElementByText('button', /continue|sign\s*up|submit|注册|创建|create/i, 5000).catch(() => null);
+  const filledPassword = String(snapshot.passwordInput?.value || '');
+  if (filledPassword !== String(password)) {
+    await sleep(250);
+    if (String(snapshot.passwordInput?.value || '') !== String(password)) {
+      logSignupPasswordDiagnostics('步骤 3：密码输入后页面值未保持');
+      throw new Error('步骤 3：密码输入后页面未保留密码值，已停止避免状态假完成。URL: ' + location.href);
+    }
+  }
+
+  let submitBtn = await waitForSignupPasswordSubmitButtonReady(10000);
+  if (!submitBtn) {
+    submitBtn = await waitForElementByText('button', /continue|sign\s*up|submit|注册|创建|create/i, 5000).catch(() => null);
+  }
 
   if (!submitBtn) {
     logSignupPasswordDiagnostics('步骤 3：未找到可提交的密码页按钮');
+    throw new Error('步骤 3：密码已填写，但未找到可提交的“继续”按钮。URL: ' + location.href);
   } else if (typeof findOneTimeCodeLoginTrigger === 'function' && findOneTimeCodeLoginTrigger()) {
     logSignupPasswordDiagnostics('步骤 3：当前密码页同时存在一次性验证码入口', 'info');
   }
@@ -2748,30 +2762,28 @@ async function step3_fillEmailPassword(payload) {
     phoneNumber: String(payload?.phoneNumber || '').trim(),
     accountIdentifierType,
     accountIdentifier,
+    password,
     signupVerificationRequestedAt,
     deferredSubmit: Boolean(submitBtn),
   };
 
-  reportComplete(3, completionPayload);
-
   if (submitBtn) {
-    window.setTimeout(async () => {
-      try {
-        throwIfStopped();
-        await sleep(500);
-        await humanPause(500, 1300);
-        await performOperationWithDelay({ stepKey: 'fill-password', kind: 'submit', label: 'submit-signup-password' }, async () => {
-          simulateClick(submitBtn);
-        });
-        log('步骤 3：表单已提交');
-      } catch (error) {
-        if (!isStopError(error)) {
-          console.error('[MultiPage:signup-page] deferred step 3 submit failed:', error?.message || error);
-        }
+    if (isSignupPasswordSubmitButtonBusy(submitBtn)) {
+      logSignupPasswordDiagnostics('步骤 3：密码页提交按钮等待后仍不可用');
+      throw new Error('步骤 3：密码已填写，但“继续”按钮仍不可点击。URL: ' + location.href);
+    }
+
+    await humanPause(500, 1300);
+    await performOperationWithDelay({ stepKey: 'fill-password', kind: 'submit', label: 'submit-signup-password' }, async () => {
+      if (isSignupPasswordSubmitButtonBusy(submitBtn)) {
+        throw new Error('步骤 3：准备提交时“继续”按钮不可点击。');
       }
-    }, 120);
+      simulateClick(submitBtn);
+    });
+    log('步骤 3：表单已提交');
   }
 
+  reportComplete(3, completionPayload);
   return completionPayload;
 }
 
@@ -2963,7 +2975,7 @@ function isLikelyLoggedInChatgptHomeUrl(rawUrl = location.href) {
     }
 
     if (typeof document !== 'undefined' && document && typeof document.querySelectorAll === 'function') {
-      const loginActionPattern = /登录|log\s*in|sign\s*in/i;
+      const loggedOutActionPattern = /登录|登入|免费注册|注册|log\s*in|sign\s*in|sign\s*up|register/i;
       const candidates = document.querySelectorAll(
         'a, button, [role="button"], [role="link"], input[type="button"], input[type="submit"]'
       );
@@ -2981,7 +2993,7 @@ function isLikelyLoggedInChatgptHomeUrl(rawUrl = location.href) {
             .join(' ')
             .replace(/\s+/g, ' ')
             .trim();
-        if (!text || !loginActionPattern.test(text)) {
+        if (!text || !loggedOutActionPattern.test(text)) {
           continue;
         }
 
@@ -3001,6 +3013,13 @@ function isLikelyLoggedInChatgptHomeUrl(rawUrl = location.href) {
       }
     }
 
+    const pageText = typeof getPageTextSnapshot === 'function'
+      ? getPageTextSnapshot()
+      : String(document?.body?.innerText || document?.body?.textContent || '');
+    if (/登录或注册|你将获得更加智能的回复|获取为你量身定制的回复|登录以获取|免费注册|使用(?:Google|Apple|电话号码)账户?继续|log\s*in\s+or\s+sign\s*up|sign\s*up/i.test(pageText)) {
+      return false;
+    }
+
     return true;
   } catch {
     return false;
@@ -3009,6 +3028,10 @@ function isLikelyLoggedInChatgptHomeUrl(rawUrl = location.href) {
 
 function getStep4PostVerificationState(options = {}) {
   const { ignoreVerificationVisibility = false } = options;
+  if (isPhoneVerificationPageReady()) {
+    return null;
+  }
+
   // Newer auth flows can briefly render profile fields before the email-verification
   // form fully exits. Do not advance to Step 5 while verification UI is still present.
   if (!ignoreVerificationVisibility && isVerificationPageStillVisible()) {
@@ -3574,9 +3597,48 @@ function isSignupPasswordPage() {
   return /\/(?:create-account|log-in)\/password(?:[/?#]|$)/i.test(location.pathname || '');
 }
 
+function createLocalSignupPassword() {
+  const upper = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const lower = 'abcdefghjkmnpqrstuvwxyz';
+  const digits = '23456789';
+  const symbols = '!@#$%&*?';
+  const all = upper + lower + digits + symbols;
+  let password = upper[Math.floor(Math.random() * upper.length)]
+    + lower[Math.floor(Math.random() * lower.length)]
+    + digits[Math.floor(Math.random() * digits.length)]
+    + symbols[Math.floor(Math.random() * symbols.length)];
+  for (let index = password.length; index < 14; index += 1) {
+    password += all[Math.floor(Math.random() * all.length)];
+  }
+  return password.split('').sort(() => Math.random() - 0.5).join('');
+}
+
+function resolveSignupPasswordValue(payload = {}) {
+  const provided = String(payload?.password || '').trim();
+  if (provided) {
+    return provided;
+  }
+  return createLocalSignupPassword();
+}
+
 function getSignupPasswordInput() {
-  const input = document.querySelector('input[type="password"]');
-  return input && isVisibleElement(input) ? input : null;
+  const selectors = [
+    'input[name="new-password"]',
+    'input[autocomplete="new-password"]',
+    'input[id$="-new-password"]',
+    'input[type="password"][name*="password" i]',
+    'input[type="password"]',
+  ];
+
+  for (const selector of selectors) {
+    const input = Array.from(document.querySelectorAll(selector))
+      .find((candidate) => isVisibleElement(candidate));
+    if (input) {
+      return input;
+    }
+  }
+
+  return null;
 }
 
 function getSignupPasswordSubmitButton({ allowDisabled = false } = {}) {
@@ -3591,6 +3653,48 @@ function getSignupPasswordSubmitButton({ allowDisabled = false } = {}) {
     const text = getActionText(el);
     return /继续|continue|submit|创建|create/i.test(text);
   }) || null;
+}
+
+function isSignupPasswordSubmitButtonBusy(button) {
+  if (!button || !isVisibleElement(button) || !isActionEnabled(button)) {
+    return true;
+  }
+
+  const ariaBusy = String(button.getAttribute?.('aria-busy') || '').trim().toLowerCase();
+  if (ariaBusy === 'true') {
+    return true;
+  }
+
+  const pendingAttr = [
+    button.getAttribute?.('data-loading'),
+    button.getAttribute?.('data-pending'),
+    button.getAttribute?.('data-submitting'),
+    button.getAttribute?.('data-state'),
+  ]
+    .map((value) => String(value || '').trim().toLowerCase())
+    .filter(Boolean)
+    .join(' ');
+
+  return /\b(?:true|loading|pending|submitting|busy)\b/.test(pendingAttr);
+}
+
+async function waitForSignupPasswordSubmitButtonReady(timeout = 8000) {
+  const start = Date.now();
+  let lastButton = null;
+
+  while (Date.now() - start < timeout) {
+    throwIfStopped();
+    const button = getSignupPasswordSubmitButton({ allowDisabled: true });
+    if (button) {
+      lastButton = button;
+      if (!isSignupPasswordSubmitButtonBusy(button)) {
+        return button;
+      }
+    }
+    await sleep(150);
+  }
+
+  return lastButton;
 }
 
 function getAuthRetryButton({ allowDisabled = false } = {}) {
@@ -4915,6 +5019,17 @@ function isSignupEmailAlreadyExistsPage() {
 }
 
 function inspectSignupVerificationState() {
+  if (typeof isPhoneVerificationPageReady === 'function' && isPhoneVerificationPageReady()) {
+    return {
+      state: 'verification',
+      phoneVerificationPage: true,
+    };
+  }
+
+  if (isVerificationPageStillVisible()) {
+    return { state: 'verification' };
+  }
+
   const postVerificationState = getStep4PostVerificationState();
   if (postVerificationState?.state === 'step5') {
     return { state: 'step5' };
@@ -4935,17 +5050,6 @@ function inspectSignupVerificationState() {
       retryButton: timeoutPage?.retryButton || null,
       userAlreadyExistsBlocked: Boolean(timeoutPage?.userAlreadyExistsBlocked),
     };
-  }
-
-  if (typeof isPhoneVerificationPageReady === 'function' && isPhoneVerificationPageReady()) {
-    return {
-      state: 'verification',
-      phoneVerificationPage: true,
-    };
-  }
-
-  if (isVerificationPageStillVisible()) {
-    return { state: 'verification' };
   }
 
   if (isSignupEmailAlreadyExistsPage()) {

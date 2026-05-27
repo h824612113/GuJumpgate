@@ -104,9 +104,11 @@
       const mail = getMailConfig(state);
       if (mail.error) throw new Error(mail.error);
 
+      const requestedAt = Number(state?.signupVerificationRequestedAt) || 0;
+      const baseFilterAfterTimestamp = requestedAt > 0 ? requestedAt : stepStartedAt;
       const verificationFilterAfterTimestamp = mail.provider === '2925'
-        ? Math.max(0, stepStartedAt - MAIL_2925_FILTER_LOOKBACK_MS)
-        : stepStartedAt;
+        ? Math.max(0, baseFilterAfterTimestamp - MAIL_2925_FILTER_LOOKBACK_MS)
+        : Math.max(0, baseFilterAfterTimestamp - 5000);
 
       if (mail.source === 'icloud-mail' && typeof ensureIcloudMailSession === 'function') {
         await addLog('步骤 4：正在确认 iCloud 邮箱登录态...', 'info');

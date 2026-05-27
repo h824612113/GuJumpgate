@@ -3,6 +3,8 @@
 console.log('[MultiPage:paypal-flow] Content script loaded on', location.href);
 
 const PAYPAL_FLOW_LISTENER_SENTINEL = 'data-multipage-paypal-flow-listener';
+const PAYPAL_FLOW_LISTENER_VERSION_SENTINEL = 'data-multipage-paypal-flow-listener-version';
+const PAYPAL_FLOW_LISTENER_VERSION = '20260527-hosted-phone-pool';
 const PAYPAL_HOSTED_STAGE_OUTSIDE = 'outside_paypal';
 const PAYPAL_HOSTED_STAGE_LOGIN = 'pay_login';
 const PAYPAL_HOSTED_STAGE_ACCOUNT_CREATE_EMAIL = 'account_create_email';
@@ -17,8 +19,9 @@ const PAYPAL_HOSTED_STAGE_UNKNOWN = 'unknown';
 const PAYPAL_HOSTED_HERMES_AUTORUN_SENTINEL = '__MULTIPAGE_PAYPAL_HOSTED_HERMES_AUTORUN__';
 const PAYPAL_HOSTED_GUEST_SUBMIT_SENTINEL = '__MULTIPAGE_PAYPAL_HOSTED_GUEST_SUBMIT__';
 
-if (document.documentElement.getAttribute(PAYPAL_FLOW_LISTENER_SENTINEL) !== '1') {
+if (document.documentElement.getAttribute(PAYPAL_FLOW_LISTENER_VERSION_SENTINEL) !== PAYPAL_FLOW_LISTENER_VERSION) {
   document.documentElement.setAttribute(PAYPAL_FLOW_LISTENER_SENTINEL, '1');
+  document.documentElement.setAttribute(PAYPAL_FLOW_LISTENER_VERSION_SENTINEL, PAYPAL_FLOW_LISTENER_VERSION);
 
   chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (
@@ -342,6 +345,35 @@ function getPayPalHostedGuestPhoneErrorMessage() {
 
 function hasPayPalHostedGuestPhoneError() {
   return Boolean(getPayPalHostedGuestPhoneErrorMessage());
+}
+
+function findPayPalHostedGuestPhoneErrorDismissButton() {
+  const phoneErrorMessage = getPayPalHostedGuestPhoneErrorMessage();
+  if (!phoneErrorMessage) {
+    return null;
+  }
+  return findClickableByText([
+    /^ok$/i,
+    /^okay$/i,
+    /close|dismiss/i,
+    /^确定$/,
+    /^关闭$/,
+  ]);
+}
+
+async function dismissPayPalHostedGuestPhoneErrorIfPresent() {
+  const button = findPayPalHostedGuestPhoneErrorDismissButton();
+  if (!button || !isEnabledControl(button)) {
+    return false;
+  }
+  await performPayPalOperationWithDelay(
+    { stepKey: 'plus-checkout-create', kind: 'click', label: 'dismiss-hosted-phone-error' },
+    async () => {
+      simulateClick(button);
+    }
+  );
+  await sleep(500);
+  return true;
 }
 
 function getPayPalHostedBlockedMessage() {
@@ -1111,6 +1143,7 @@ async function fillHostedGuestCheckout(payload = {}) {
   await waitForDocumentComplete();
   startHostedCaptchaCleanupObserver();
   removeHostedCaptchaArtifacts();
+  await dismissPayPalHostedGuestPhoneErrorIfPresent();
   log(`PayPal guest checkout：收到 payload.phone=${String(payload?.phone || '').trim() || '(空)'}，payload.address=${JSON.stringify(payload?.address || {})}`, 'info');
 
   await sleep(2000);

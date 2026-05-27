@@ -12,6 +12,7 @@
       getState,
       requestStop = null,
       readAuthTabSnapshot = null,
+      chrome = null,
       sendToContentScript,
       sendToContentScriptResilient,
       navigateAuthTabToAddPhone = null,
@@ -683,7 +684,7 @@
       if (!text) {
         return false;
       }
-      return /phone_max_usage_exceeded|phone_number_in_use|already\s+linked\s+to\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|号码.*(?:已|被).*(?:使用|占用|绑定|注册)|手机号.*(?:已|被).*(?:使用|占用|绑定|注册)|该手机号.*(?:已|被).*(?:使用|占用|绑定|注册)/i.test(text);
+      return /phone_max_usage_exceeded|phone_number_in_use|already\s+(?:linked|associated)\s+to\s+the\s+maximum\s+number\s+of\s+accounts|associated\s+with\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*(?:已|被).*(?:使用|占用|绑定|注册|关联)|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*关联.*(?:最多|最大|上限).*(?:账户|账号)/i.test(text);
     }
 
     function isPhoneNumberInvalidError(value) {
@@ -699,7 +700,32 @@
       if (!text) {
         return false;
       }
-      return /无法向此电话号码发送验证码|无法向.*(?:电话号码|手机号|号码).*发送(?:验证码|短信)|(?:不能|无法).*发送.*(?:验证码|短信).*(?:电话号码|手机号|号码)|(?:cannot|can't|could\s*not|couldn't|unable\s+to)\s+(?:send|deliver).{0,80}(?:verification\s+code|code|sms|text(?:\s+message)?).{0,80}(?:phone|number)|(?:verification\s+code|sms|text(?:\s+message)?).{0,80}(?:cannot|can't|could\s*not|couldn't|unable\s+to).{0,80}(?:send|deliver)/i.test(text);
+      return /无法向此电话号码发送验证码|无法向.*(?:电话号码|手机号|号码).*发送(?:验证码|短信)|(?:不能|无法).*发送.*(?:验证码|短信).*(?:电话号码|手机号|号码)|(?:虚拟号码|非虚拟(?:电话)?号码|voip|virtual\s+(?:phone\s+)?number)|(?:cannot|can't|could\s*not|couldn't|unable\s+to)\s+(?:send|deliver).{0,80}(?:verification\s+code|code|sms|text(?:\s+message)?).{0,80}(?:phone|number)|(?:verification\s+code|sms|text(?:\s+message)?).{0,80}(?:cannot|can't|could\s*not|couldn't|unable\s+to).{0,80}(?:send|deliver)/i.test(text);
+    }
+
+    function classifyAddPhoneRejectedReason(value) {
+      const text = String(value || '').trim();
+      if (!text) {
+        return '';
+      }
+      if (isPhoneNumberUsedError(text)) {
+        return 'phone_number_used';
+      }
+      if (isPhoneNumberDeliveryRefusedError(text)) {
+        return 'phone_delivery_refused';
+      }
+      if (isPhoneNumberInvalidError(text)) {
+        return 'phone_number_invalid';
+      }
+      return '';
+    }
+
+    function shouldBanActivationAfterAddPhoneFailure(failureReason = '', failureCode = '') {
+      const normalizedCode = String(failureCode || '').trim();
+      return normalizedCode === 'phone_number_used'
+        || normalizedCode === 'phone_delivery_refused'
+        || normalizedCode === 'phone_number_invalid'
+        || Boolean(classifyAddPhoneRejectedReason(failureReason));
     }
 
     function isWhatsAppPhoneResendResult(value) {
@@ -1354,6 +1380,8 @@
       const reasonMap = {
         returned_to_add_phone_loop: '反复返回添加手机号页',
         phone_number_used: '手机号已被使用',
+        phone_number_invalid: '手机号无效',
+        phone_delivery_refused: 'OpenAI 拒绝向该手机号发送验证码',
         sms_not_received: '未收到短信',
         sms_timeout: '短信超时',
         resend_throttled: '重发短信被限流',
@@ -5818,6 +5846,37 @@
       const timeoutMs = typeof getOAuthFlowStepTimeoutMs === 'function'
         ? await getOAuthFlowStepTimeoutMs(45000, { step: visibleStep, actionLabel: '提交注册手机验证码' })
         : 45000;
+
+      const directResult = await submitSignupPhoneVerificationCodeDirectly(tabId, code);
+      if (directResult?.invalidCode) {
+        return {
+          invalidCode: true,
+          errorText: directResult.errorText || directResult.error || '手机验证码被拒绝。',
+        };
+      }
+      if (directResult?.ok) {
+        await addLog(
+          `步骤 4：已直接写入注册手机验证码并提交（${directResult.inputType === 'split' ? '分格输入框' : '单输入框'}，${directResult.valueLength || String(code || '').length} 位）。`,
+          'ok',
+          { step: visibleStep, stepKey: 'fetch-signup-code' }
+        );
+        return {
+          success: true,
+          directPhoneCodeFill: true,
+          directFillResult: directResult,
+          ...(directResult.emailVerificationRequired ? { emailVerificationRequired: true, emailVerificationPage: true } : {}),
+          ...(directResult.skipProfileStep ? { skipProfileStep: true } : {}),
+          ...(directResult.skipProfileStepReason ? { skipProfileStepReason: directResult.skipProfileStepReason } : {}),
+        };
+      }
+      if (directResult?.error) {
+        await addLog(
+          `步骤 4：后台直填注册手机验证码未成功，回退到内容脚本路径：${directResult.error}`,
+          'warn',
+          { step: visibleStep, stepKey: 'fetch-signup-code' }
+        );
+      }
+
       const result = await sendToContentScriptResilient('signup-page', {
         type: 'SUBMIT_PHONE_VERIFICATION_CODE',
         step: visibleStep,
@@ -5840,6 +5899,245 @@
         throw new Error(result.error);
       }
       return result || {};
+    }
+
+    async function submitSignupPhoneVerificationCodeDirectly(tabId, code) {
+      const normalizedCode = String(code || '').trim();
+      if (!normalizedCode) {
+        return { ok: false, error: '未提供注册手机验证码。' };
+      }
+      if (!chrome?.scripting?.executeScript) {
+        return { skipped: true, reason: 'scripting_unavailable' };
+      }
+
+      const [executionResult = {}] = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: (targetCode) => {
+          const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+          const getPageText = () => String(document.body?.innerText || document.body?.textContent || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+          const isVisibleElement = (element) => {
+            if (!element) return false;
+            const rect = element.getBoundingClientRect?.();
+            const style = window.getComputedStyle?.(element);
+            return Boolean(
+              (!rect || rect.width > 0 || rect.height > 0)
+              && style?.display !== 'none'
+              && style?.visibility !== 'hidden'
+              && element.type !== 'hidden'
+            );
+          };
+          const isActionEnabled = (element) => {
+            if (!element || !isVisibleElement(element)) return false;
+            if (element.disabled) return false;
+            if (String(element.getAttribute?.('aria-disabled') || '').toLowerCase() === 'true') return false;
+            const ariaBusy = String(element.getAttribute?.('aria-busy') || '').toLowerCase();
+            if (ariaBusy === 'true') return false;
+            const pending = [
+              element.getAttribute?.('data-loading'),
+              element.getAttribute?.('data-pending'),
+              element.getAttribute?.('data-submitting'),
+              element.getAttribute?.('data-state'),
+            ].map((value) => String(value || '').toLowerCase()).join(' ');
+            return !/\b(?:true|loading|pending|submitting|busy)\b/.test(pending);
+          };
+          const getActionText = (element) => [
+            element?.innerText,
+            element?.textContent,
+            element?.value,
+            element?.getAttribute?.('aria-label'),
+            element?.getAttribute?.('title'),
+          ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim();
+          const isPhoneVerificationPage = () => {
+            const path = `${location.pathname || ''} ${location.href || ''}`;
+            if (/\/(?:phone|contact)-verification(?:[/?#]|$)/i.test(path)) return true;
+            if (document.querySelector('form[action*="/phone-verification" i]')) return true;
+            const pageText = getPageText();
+            return /check\s+your\s+phone|phone\s+verification|verify\s+your\s+phone|sms|text\s+message|code\s+to\s+\+|验证码|短信/i.test(pageText);
+          };
+          const findSingleCodeInput = () => {
+            const selectors = [
+              'input[name="code"]',
+              'input[name="otp"]',
+              'input[autocomplete="one-time-code"]',
+              'input[type="text"][maxlength="6"]',
+              'input[type="tel"][maxlength="6"]',
+              'input[aria-label*="code" i]',
+              'input[placeholder*="code" i]',
+              'input[inputmode="numeric"]',
+            ];
+            for (const selector of selectors) {
+              const input = Array.from(document.querySelectorAll(selector)).find((element) => {
+                if (!isVisibleElement(element)) return false;
+                const maxLength = Number(element.getAttribute?.('maxlength') || element.maxLength || 0);
+                return maxLength !== 1;
+              });
+              if (input) return input;
+            }
+            return null;
+          };
+          const getSplitInputs = () => Array.from(document.querySelectorAll('input[maxlength="1"]'))
+            .filter(isVisibleElement);
+          const dispatchInputEvents = (input, value) => {
+            try {
+              input.dispatchEvent(new InputEvent('beforeinput', {
+                bubbles: true,
+                cancelable: true,
+                data: value,
+                inputType: 'insertText',
+              }));
+            } catch {}
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+            try {
+              input.dispatchEvent(new KeyboardEvent('keyup', { key: String(value || '').slice(-1), bubbles: true }));
+            } catch {}
+          };
+          const setInputValue = (input, value) => {
+            input.focus?.();
+            const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
+            if (nativeSetter) {
+              nativeSetter.call(input, value);
+            } else {
+              input.value = value;
+            }
+            input.setAttribute('value', value);
+            dispatchInputEvents(input, value);
+          };
+          const clickElement = (element) => {
+            for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) {
+              try {
+                element.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window }));
+              } catch {}
+            }
+            element.click?.();
+          };
+          const findSubmitButton = (anchor) => {
+            const form = anchor?.form || anchor?.closest?.('form') || null;
+            const roots = [form, document].filter(Boolean);
+            for (const root of roots) {
+              const direct = Array.from(root.querySelectorAll('button[type="submit"], input[type="submit"]'))
+                .find(isActionEnabled);
+              if (direct) return direct;
+              const byText = Array.from(root.querySelectorAll('button, [role="button"], input[type="button"], input[type="submit"]'))
+                .find((element) => isActionEnabled(element) && /continue|next|submit|verify|confirm|继续|下一步|提交|验证|确认/i.test(getActionText(element)));
+              if (byText) return byText;
+            }
+            return null;
+          };
+          const readPostSubmitState = () => {
+            const path = `${location.pathname || ''} ${location.href || ''}`;
+            if (/\/email-verification(?:[/?#]|$)/i.test(path)) {
+              return { emailVerificationRequired: true };
+            }
+            if (/chatgpt\.com/i.test(location.hostname || '')) {
+              return { skipProfileStep: true, skipProfileStepReason: 'logged_in_home' };
+            }
+            if (/profile|birthday|name/i.test(path) || /tell us about you|date of birth|birthday|first name|last name|你的生日|名字|姓氏/i.test(getPageText())) {
+              return { success: true };
+            }
+            return {};
+          };
+          const getVerificationErrorText = () => {
+            const pageText = getPageText();
+            const match = pageText.match(/(?:invalid|incorrect|wrong|expired|try again|not valid)[^.。]*|验证码(?:不正确|错误|无效|已过期)|代码(?:不正确|错误|无效|已过期)/i);
+            return match?.[0] ? String(match[0]).trim() : '';
+          };
+          const waitForSubmitOutcome = async () => {
+            const start = Date.now();
+            while (Date.now() - start < 12000) {
+              const errorText = getVerificationErrorText();
+              if (errorText) {
+                return { invalidCode: true, errorText, url: location.href };
+              }
+              const postState = readPostSubmitState();
+              if (
+                postState.emailVerificationRequired
+                || postState.skipProfileStep
+                || postState.success
+              ) {
+                return { ok: true, url: location.href, ...postState };
+              }
+              if (!isPhoneVerificationPage()) {
+                return { ok: true, url: location.href };
+              }
+              await sleep(200);
+            }
+
+            return {
+              ok: false,
+              error: `验证码已写入但提交后仍停留在手机验证码页。URL: ${location.href}`,
+              url: location.href,
+            };
+          };
+
+          if (!isPhoneVerificationPage()) {
+            return { ok: false, error: `当前不是手机验证码页。URL: ${location.href}` };
+          }
+
+          const splitInputs = getSplitInputs();
+          let inputType = 'single';
+          let valueLength = 0;
+          let anchor = null;
+
+          if (splitInputs.length >= targetCode.length) {
+            inputType = 'split';
+            for (let index = 0; index < targetCode.length; index += 1) {
+              setInputValue(splitInputs[index], targetCode[index]);
+            }
+            const current = splitInputs.slice(0, targetCode.length)
+              .map((input) => String(input.value || '').trim())
+              .join('');
+            if (current !== targetCode) {
+              return {
+                ok: false,
+                error: `分格验证码输入后页面值未保持。当前值=${current || '(empty)'}`,
+                inputType,
+                url: location.href,
+              };
+            }
+            valueLength = current.length;
+            anchor = splitInputs[0];
+          } else {
+            const input = findSingleCodeInput();
+            if (!input) {
+              return { ok: false, error: `未找到注册手机验证码输入框。URL: ${location.href}` };
+            }
+            setInputValue(input, targetCode);
+            if (String(input.value || '').trim() !== targetCode) {
+              setInputValue(input, targetCode);
+            }
+            if (String(input.value || '').trim() !== targetCode) {
+              return {
+                ok: false,
+                error: `验证码输入后页面值未保持。当前长度=${String(input.value || '').length}`,
+                inputName: input.name || '',
+                inputId: input.id || '',
+                url: location.href,
+              };
+            }
+            valueLength = String(input.value || '').trim().length;
+            anchor = input;
+          }
+
+          const button = findSubmitButton(anchor);
+          if (button) {
+            clickElement(button);
+          }
+
+          return waitForSubmitOutcome().then((outcome) => ({
+            inputType,
+            valueLength,
+            buttonText: button ? getActionText(button) : '',
+            submitted: Boolean(button),
+            ...outcome,
+          }));
+        },
+        args: [normalizedCode],
+      });
+
+      return executionResult.result || null;
     }
 
     async function resendSignupPhoneVerificationCode(tabId) {
@@ -7816,7 +8114,17 @@
           'warn'
         );
         if (shouldReleaseActivationOnReplacement(activation, shouldCancelActivation)) {
-          await cancelPhoneActivation(state, activation, { forceTerminalStatus: true });
+          if (shouldBanActivationAfterAddPhoneFailure(failureReason, failureCode)) {
+            await banPhoneActivation(await getState(), activation, { forceTerminalStatus: true });
+          } else {
+            await cancelPhoneActivation(state, activation, { forceTerminalStatus: true });
+          }
+        } else if (shouldCancelActivation && activation) {
+          if (shouldBanActivationAfterAddPhoneFailure(failureReason, failureCode)) {
+            await banPhoneActivation(await getState(), activation);
+          } else {
+            await cancelPhoneActivation(state, activation);
+          }
         }
         await clearCurrentActivation();
         activation = null;
@@ -7960,16 +8268,17 @@
             }
             if (submitResult.addPhoneRejected) {
               const addPhoneRejectText = String(submitResult.errorText || submitResult.url || 'unknown error');
-              if (isPhoneNumberUsedError(addPhoneRejectText)) {
+              const addPhoneRejectedReason = classifyAddPhoneRejectedReason(addPhoneRejectText);
+              if (addPhoneRejectedReason) {
                 usedNumberReplacementAttempts += 1;
                 if (usedNumberReplacementAttempts > maxNumberReplacementAttempts) {
                   throw new Error(
-                    `步骤 9：更换 ${maxNumberReplacementAttempts} 次号码后手机号验证仍未成功。最后原因：${formatStep9Reason('phone_number_used')}。`
+                    `步骤 9：更换 ${maxNumberReplacementAttempts} 次号码后手机号验证仍未成功。最后原因：${formatStep9Reason(addPhoneRejectedReason)}。`
                   );
                 }
 
                 await addLog(
-                  `步骤 9：添加手机号页面提示 ${activation.phoneNumber} 已被使用（${addPhoneRejectText}），正在更换号码（${usedNumberReplacementAttempts}/${maxNumberReplacementAttempts}）。`,
+                  `步骤 9：添加手机号页面拒绝号码 ${activation.phoneNumber}（${addPhoneRejectText}），已标记不可用并更换号码（${usedNumberReplacementAttempts}/${maxNumberReplacementAttempts}）。`,
                   'warn'
                 );
                 await discardPhoneActivationFromReuse(
@@ -7998,14 +8307,6 @@
                 };
                 continue;
               }
-              if (isPhoneNumberDeliveryRefusedError(addPhoneRejectText)) {
-                await rotateActivationAfterAddPhoneFailure(
-                  addPhoneRejectText,
-                  'phone_delivery_refused',
-                  submitResult || {}
-                );
-                continue;
-              }
 
               await addLog(
                 `步骤 9：添加手机号页面拒绝当前号码，但未明确提示已使用（${addPhoneRejectText}），将用同一号码再试一次。`,
@@ -8029,11 +8330,10 @@
                   || isPhoneNumberDeliveryRefusedError(retryRejectText)
                   || isRecoverableAddPhoneSubmitError(retryRejectText)
                 ) {
+                  const retryRejectedReason = classifyAddPhoneRejectedReason(retryRejectText);
                   await rotateActivationAfterAddPhoneFailure(
                     `add-phone keeps rejecting ${activation.phoneNumber} (${retryRejectText})`,
-                    isPhoneNumberUsedError(retryRejectText)
-                      ? 'phone_number_used'
-                      : (isPhoneNumberDeliveryRefusedError(retryRejectText) ? 'phone_delivery_refused' : 'add_phone_rejected'),
+                    retryRejectedReason || 'add_phone_rejected',
                     submitResult || {}
                   );
                   continue;
@@ -8399,6 +8699,7 @@
       prepareSignupPhoneActivation,
       reactivatePhoneActivation,
       requestPhoneActivation,
+      submitSignupPhoneVerificationCodeDirectly,
       waitForLoginPhoneCode,
       waitForSignupPhoneCode,
     };

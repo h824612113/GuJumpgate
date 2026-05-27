@@ -73,6 +73,7 @@
   const HOSTED_CHECKOUT_CARD_FALLBACK_ERROR_PREFIX = 'HOSTED_CHECKOUT_CARD_FALLBACK::';
   const HOSTED_CHECKOUT_CARD_DECLINED_ERROR_PREFIX = 'HOSTED_CHECKOUT_CARD_DECLINED::';
   const HOSTED_CHECKOUT_VERIFICATION_RESEND_LIMIT_PREFIX = 'HOSTED_CHECKOUT_VERIFICATION_RESEND_LIMIT::';
+  const HOSTED_CHECKOUT_SMS_POOL_TERMINAL_ERROR_PREFIX = 'HOSTED_CHECKOUT_SMS_POOL_TERMINAL::';
   const HOSTED_CHECKOUT_VERIFICATION_RESEND_MAX_ATTEMPTS_DEFAULT = 1;
   const HOSTED_CHECKOUT_VERIFICATION_RESEND_MAX_ATTEMPTS_LIMIT = 10;
   const PLUS_CHECKOUT_PROFILE_SETTING_KEYS = Object.freeze([
@@ -2542,6 +2543,10 @@ function FindProxyForURL(url, host) {
         if (responsePreview) {
           error.hostedCheckoutResponsePreview = responsePreview;
           error.message = `hosted checkout 验证码接口暂未返回有效验证码，响应预览：${responsePreview}`;
+          if (/中转链接不存在|链接不存在|text[-_\s]*relay.*(?:不存在|not\s*found)|relay\s+link.*(?:not\s*found|does\s*not\s*exist)|not\s*found|不存在/i.test(responsePreview)) {
+            error.hostedCheckoutSmsPoolTerminal = true;
+            error.message = `${HOSTED_CHECKOUT_SMS_POOL_TERMINAL_ERROR_PREFIX}${error.message}`;
+          }
         }
       }
       return error;
@@ -2647,7 +2652,7 @@ function FindProxyForURL(url, host) {
       const code = extractHostedCheckoutVerificationCode(payload);
       if (!code) {
         const noCodeError = buildHostedCheckoutNoVerificationCodeError(payload);
-        if (!noCodeError.hostedCheckoutResendImmediately && verificationUrl) {
+        if (!noCodeError.hostedCheckoutSmsPoolTerminal && !noCodeError.hostedCheckoutResendImmediately && verificationUrl) {
           try {
             const fallbackResult = await fetchHostedCheckoutVerificationCodeViaBrowserTab(verificationUrl);
             if (runtimeConfig.hostedCheckoutUsesSmsPool && runtimeConfig.hostedCheckoutCurrentSmsEntry) {
@@ -2701,7 +2706,7 @@ function FindProxyForURL(url, host) {
         const code = extractHostedCheckoutVerificationCode(payload);
         if (!code) {
           const noCodeError = buildHostedCheckoutNoVerificationCodeError(payload);
-          if (!noCodeError.hostedCheckoutResendImmediately) {
+          if (!noCodeError.hostedCheckoutSmsPoolTerminal && !noCodeError.hostedCheckoutResendImmediately) {
             try {
               const fallbackResult = await fetchHostedCheckoutVerificationCodeViaBrowserTab(manualVerificationUrl);
               return {
@@ -2803,6 +2808,9 @@ function FindProxyForURL(url, host) {
           return code;
         } catch (error) {
           lastError = error;
+          if (isHostedCheckoutSmsPoolTerminalError(error)) {
+            throw error;
+          }
           if (error?.hostedCheckoutResendImmediately) {
             if (allowImmediateResendOnNonCode) {
               await addLog(`步骤 6：${label} 接口返回非验证码内容，将立即触发 Resend：${error.hostedCheckoutResponsePreview || error.message}`, 'warn');
@@ -3205,14 +3213,26 @@ function FindProxyForURL(url, host) {
 
     function shouldAutoDisableHostedCheckoutSmsEntry(error) {
       const message = String(typeof error === 'string' ? error : error?.message || '');
-      return message.includes(HOSTED_CHECKOUT_VERIFICATION_RESEND_LIMIT_PREFIX)
+      return message.includes(HOSTED_CHECKOUT_SMS_POOL_TERMINAL_ERROR_PREFIX)
+        || message.includes(HOSTED_CHECKOUT_VERIFICATION_RESEND_LIMIT_PREFIX)
         || /hosted checkout 验证码接口暂未返回有效验证码|浏览器标签页兜底取码|未解析到验证码|验证码自动 Resend 重试已达到上限/i.test(message);
+    }
+
+    function isHostedCheckoutSmsPoolTerminalError(error) {
+      const message = String(typeof error === 'string' ? error : error?.message || '');
+      return Boolean(error?.hostedCheckoutSmsPoolTerminal)
+        || message.includes(HOSTED_CHECKOUT_SMS_POOL_TERMINAL_ERROR_PREFIX)
+        || /中转链接不存在|链接不存在|text[-_\s]*relay.*(?:不存在|not\s*found)|relay\s+link.*(?:not\s*found|does\s*not\s*exist)/i.test(message);
     }
 
     function buildHostedCheckoutSmsPoolDisableReason(error) {
       const message = String(typeof error === 'string' ? error : error?.message || '')
+        .replace(HOSTED_CHECKOUT_SMS_POOL_TERMINAL_ERROR_PREFIX, '')
         .replace(HOSTED_CHECKOUT_VERIFICATION_RESEND_LIMIT_PREFIX, '')
         .trim();
+      if (isHostedCheckoutSmsPoolTerminalError(error)) {
+        return `验证码接口链接不可用：${message}`;
+      }
       if (/验证码自动 Resend 重试已达到上限/i.test(message)) {
         return `PayPal 验证码多次失败：${message}`;
       }
@@ -3227,7 +3247,9 @@ function FindProxyForURL(url, host) {
         ensureCurrentSmsEntry: false,
       });
       if (!latestConfig?.hostedCheckoutSmsPoolAutoDisableEnabled) {
-        return null;
+        if (!isHostedCheckoutSmsPoolTerminalError(error)) {
+          return null;
+        }
       }
       if (!shouldAutoDisableHostedCheckoutSmsEntry(error)) {
         return null;
@@ -3241,7 +3263,7 @@ function FindProxyForURL(url, host) {
       const currentUsage = usage[currentEntry.key] || {};
       const nextFailureCount = Math.max(0, Math.floor(Number(currentUsage.failureCount) || 0)) + 1;
       const reason = buildHostedCheckoutSmsPoolDisableReason(error);
-      if (nextFailureCount < HOSTED_CHECKOUT_SMS_POOL_DISABLE_THRESHOLD) {
+      if (!isHostedCheckoutSmsPoolTerminalError(error) && nextFailureCount < HOSTED_CHECKOUT_SMS_POOL_DISABLE_THRESHOLD) {
         await updateHostedCheckoutPoolUsage(currentEntry, {
           success: false,
           error: reason,
@@ -3467,6 +3489,45 @@ function FindProxyForURL(url, host) {
       return result || {};
     }
 
+    async function switchHostedCheckoutSmsPoolAfterPhoneError(phoneErrorMessage = '') {
+      const runtimeConfig = await getHostedCheckoutRuntimeConfig({
+        ensureCurrentSmsEntry: false,
+      });
+      if (!runtimeConfig?.hostedCheckoutUsesSmsPool || !runtimeConfig?.hostedCheckoutCurrentSmsEntry?.key) {
+        return {
+          switched: false,
+          reason: 'sms_pool_not_active',
+          runtimeConfig,
+        };
+      }
+
+      const disableReason = `PayPal 提示号码不可用：${String(phoneErrorMessage || '').trim()}`;
+      const disableResult = await disableHostedCheckoutSmsPoolEntry(
+        runtimeConfig.hostedCheckoutCurrentSmsEntry,
+        disableReason,
+        { failureCount: HOSTED_CHECKOUT_SMS_POOL_DISABLE_THRESHOLD }
+      );
+      await addLog(
+        `步骤 6：PayPal 接码池号码 ${runtimeConfig.hostedCheckoutCurrentSmsEntry.phone} 已禁用并准备换号。原因：${disableReason}`,
+        'warn'
+      );
+      if (!disableResult?.nextEntry?.phone) {
+        return {
+          switched: false,
+          reason: 'sms_pool_exhausted',
+          runtimeConfig,
+          disableResult,
+        };
+      }
+      await addLog(`步骤 6：PayPal 接码池已切换到下一个启用号码 ${disableResult.nextEntry.phone}，准备重新填写 guest checkout。`, 'info');
+      return {
+        switched: true,
+        nextEntry: disableResult.nextEntry,
+        runtimeConfig,
+        disableResult,
+      };
+    }
+
     async function getHostedCheckoutPayPalState(tabId) {
       await ensureContentScriptReadyOnTabUntilStopped(PAYPAL_SOURCE, tabId, {
         inject: PAYPAL_INJECT_FILES,
@@ -3655,28 +3716,11 @@ function FindProxyForURL(url, host) {
             pageState.hostedGuestPhoneErrorMessage
             || 'We’re unable to complete your request. Try a different phone number.'
           ).trim();
-          const runtimeConfig = await getHostedCheckoutRuntimeConfig({
-            ensureCurrentSmsEntry: false,
-          });
-          if (
-            runtimeConfig?.hostedCheckoutUsesSmsPool
-            && runtimeConfig?.hostedCheckoutCurrentSmsEntry?.key
-            && runtimeConfig?.hostedCheckoutSmsPoolAutoDisableEnabled
-          ) {
-            const disableReason = `PayPal 提示号码不可用：${phoneErrorMessage}`;
-            const disableResult = await disableHostedCheckoutSmsPoolEntry(
-              runtimeConfig.hostedCheckoutCurrentSmsEntry,
-              disableReason,
-              { failureCount: HOSTED_CHECKOUT_SMS_POOL_DISABLE_THRESHOLD }
-            );
-            await addLog(`步骤 6：PayPal 接码池号码 ${runtimeConfig.hostedCheckoutCurrentSmsEntry.phone} 已立即自动禁用。原因：${disableReason}`, 'warn');
-            if (!disableResult?.nextEntry?.phone) {
-              throw new Error(`步骤 6：PayPal 提示当前号码不可用，且接码池已无其他启用号码：${phoneErrorMessage}`);
-            }
-            await addLog(`步骤 6：PayPal 接码池已切换到下一个启用号码 ${disableResult.nextEntry.phone}，准备重新填写 guest checkout。`, 'info');
+          const switchResult = await switchHostedCheckoutSmsPoolAfterPhoneError(phoneErrorMessage);
+          if (switchResult?.switched && switchResult?.nextEntry?.phone) {
             guestProfile = {
               ...guestProfile,
-              phone: String(disableResult.nextEntry.phone || '').trim(),
+              phone: String(switchResult.nextEntry.phone || '').trim(),
             };
             hostedVerificationSubmitted = false;
             hostedVerificationLastSubmittedAt = 0;
@@ -3688,6 +3732,9 @@ function FindProxyForURL(url, host) {
             });
             await sleepWithStop(1500);
             continue;
+          }
+          if (switchResult?.reason === 'sms_pool_exhausted') {
+            throw new Error(`步骤 6：PayPal 提示当前号码不可用，且接码池已无其他启用号码：${phoneErrorMessage}`);
           }
           throw new Error(`步骤 6：PayPal 提示当前号码不可用：${phoneErrorMessage}`);
         }
@@ -3955,13 +4002,46 @@ function FindProxyForURL(url, host) {
       await completePlusCheckoutCreate(completionPayload);
     }
 
+    async function restartHostedCheckoutAutomationWithNextSmsEntry(previousTabId, error, completionPayload = {}) {
+      const disableResult = await maybeAutoDisableHostedCheckoutCurrentSmsEntry(error).catch(() => null);
+      const nextEntry = disableResult?.nextEntry || null;
+      if (!nextEntry?.phone) {
+        return false;
+      }
+      const message = String(error?.message || error || '').replace(HOSTED_CHECKOUT_SMS_POOL_TERMINAL_ERROR_PREFIX, '').trim();
+      await addLog(
+        `步骤 6：当前 PayPal 接码池条目不可用，已禁用并切换到 ${nextEntry.phone}，准备重建 hosted checkout。原因：${message}`,
+        'warn'
+      );
+      if (chrome?.tabs?.remove && Number.isInteger(previousTabId)) {
+        await chrome.tabs.remove(previousTabId).catch(() => {});
+      }
+      const latestState = typeof getState === 'function' ? await getState().catch(() => ({})) : {};
+      await executePlusCheckoutCreate({
+        ...latestState,
+        plusPaymentMethod: PLUS_PAYMENT_METHOD_PAYPAL,
+      });
+      return true;
+    }
+
     function startHostedCheckoutAutomation(tabId, completionPayload = {}) {
       if (!enableHostedCheckoutAutomation) {
         return;
       }
+      let restartedWithNextHostedSmsEntry = false;
       void runHostedCheckoutAutomation(tabId, completionPayload)
         .catch(async (error) => {
           const message = error?.message || String(error || 'hosted checkout automation failed');
+          if (isHostedCheckoutSmsPoolTerminalError(error)) {
+            const restarted = await restartHostedCheckoutAutomationWithNextSmsEntry(tabId, error, completionPayload).catch(async (restartError) => {
+              await addLog(`步骤 6：切换 PayPal 接码池下一号并重建 checkout 失败：${restartError?.message || restartError}`, 'error');
+              return false;
+            });
+            if (restarted) {
+              restartedWithNextHostedSmsEntry = true;
+              return;
+            }
+          }
           await maybeAutoDisableHostedCheckoutCurrentSmsEntry(error).catch(() => null);
           if (isHostedCheckoutNonFreeTrialFailure(error)) {
             const latestState = typeof getState === 'function'
@@ -4000,7 +4080,9 @@ function FindProxyForURL(url, host) {
           }
         })
         .finally(async () => {
-          await clearHostedCheckoutCurrentSmsEntry();
+          if (!restartedWithNextHostedSmsEntry) {
+            await clearHostedCheckoutCurrentSmsEntry();
+          }
         });
     }
 

@@ -14684,6 +14684,61 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       : '';
     return title && title !== nodeId ? `${nodeId}（${title}）` : nodeId;
   };
+  const inspectSignupPasswordPageNeedingPassword = async () => {
+    const signupTabId = await getTabId('signup-page').catch(() => null);
+    if (!Number.isInteger(signupTabId)) {
+      return { needsFill: false, reason: 'signup_tab_missing' };
+    }
+    const currentTab = await chrome.tabs.get(signupTabId).catch(() => null);
+    if (currentTab?.url && !isSignupPasswordPageUrl(currentTab.url)) {
+      return { needsFill: false, reason: 'not_password_url', url: currentTab.url };
+    }
+    if (!chrome?.scripting?.executeScript) {
+      return { needsFill: false, reason: 'scripting_unavailable', url: currentTab?.url || '' };
+    }
+
+    const [{ result } = {}] = await chrome.scripting.executeScript({
+      target: { tabId: signupTabId },
+      world: 'MAIN',
+      func: () => {
+        const isVisibleElement = (element) => {
+          if (!element) return false;
+          const rect = element.getBoundingClientRect?.();
+          const style = window.getComputedStyle?.(element);
+          return Boolean(
+            (!rect || rect.width > 0 || rect.height > 0)
+            && style?.display !== 'none'
+            && style?.visibility !== 'hidden'
+            && element.type !== 'hidden'
+          );
+        };
+        const input = [
+          'input[name="new-password"]',
+          'input[autocomplete="new-password"]',
+          'input[id$="-new-password"]',
+          'input[type="password"][name*="password" i]',
+          'input[type="password"]',
+        ]
+          .flatMap((selector) => Array.from(document.querySelectorAll(selector)))
+          .find(isVisibleElement) || null;
+        const passwordPage = /\/(?:create-account|log-in)\/password(?:[/?#]|$)/i.test(location.pathname || location.href || '');
+        return {
+          passwordPage,
+          inputFound: Boolean(input),
+          inputName: input?.name || '',
+          inputId: input?.id || '',
+          valueLength: String(input?.value || '').length,
+          url: location.href,
+        };
+      },
+    }).catch(() => []);
+
+    const pageState = result || {};
+    return {
+      ...pageState,
+      needsFill: Boolean(pageState.passwordPage && pageState.inputFound),
+    };
+  };
   const getNodeIndex = (state, nodeId) => getAutoRunWorkflowNodeIds(state).indexOf(nodeId);
   const shouldRunNamedNode = async (nodeId) => {
     const state = await getState();
@@ -14841,9 +14896,28 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       totalRuns,
       attemptRun: attemptRuns,
     });
+    let shouldExecuteFillPassword = !isStepDoneStatus(fillPasswordStatus);
     if (isStepDoneStatus(fillPasswordStatus)) {
-      await addLog(`自动运行：节点 fill-password 当前状态为 ${fillPasswordStatus}，将直接继续后续流程。`, 'info');
-    } else {
+      const passwordPageState = await inspectSignupPasswordPageNeedingPassword().catch((error) => ({
+        needsFill: false,
+        error: getErrorMessage(error),
+      }));
+      if (passwordPageState?.needsFill) {
+        await addLog(
+          `自动运行：节点 fill-password 虽为 ${fillPasswordStatus}，但当前认证页仍停在密码输入框 ${passwordPageState.inputName || passwordPageState.inputId || 'password'}（当前长度 ${passwordPageState.valueLength || 0}），将强制重新生成/填写密码。`,
+          'warn'
+        );
+        await invalidateDownstreamAfterAutoRunNodeRestart('fill-password', {
+          logLabel: '步骤 3 发现密码页仍未通过，准备重新填写密码',
+        });
+        await setNodeStatus('fill-password', 'pending');
+        shouldExecuteFillPassword = true;
+      } else {
+        await addLog(`自动运行：节点 fill-password 当前状态为 ${fillPasswordStatus}，将直接继续后续流程。`, 'info');
+      }
+    }
+
+    if (shouldExecuteFillPassword) {
       try {
         await executeNodeAndWaitWithAutoRunIdleLogWatchdog('fill-password', getAutoRunNodeDelayMs('fill-password'));
       } catch (err) {
@@ -15297,6 +15371,7 @@ const verificationFlowHelpers = self.MultiPageBackgroundVerificationFlow?.create
 const phoneVerificationHelpers = self.MultiPageBackgroundPhoneVerification?.createPhoneVerificationHelpers({
   addLog,
   broadcastDataUpdate,
+  chrome,
   DEFAULT_FIVE_SIM_BASE_URL,
   DEFAULT_FIVE_SIM_COUNTRY_ORDER,
   DEFAULT_FIVE_SIM_OPERATOR,
@@ -15388,6 +15463,7 @@ const step3Executor = self.MultiPageBackgroundStep3?.createStep3Executor({
   addLog,
   appendAccountRunRecord: (...args) => appendAndBroadcastAccountRunRecord(...args),
   chrome,
+  completeNodeFromBackground,
   ensureContentScriptReadyOnTab,
   generatePassword,
   getTabId,

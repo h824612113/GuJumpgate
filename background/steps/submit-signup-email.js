@@ -502,6 +502,7 @@
       const landingResult = await ensureSignupPostEmailPageReadyInTab(signupTabId, 2, {
         skipUrlWait: Boolean(step2Result?.alreadyOnPasswordPage),
       });
+      const skippedPasswordStep = landingResult?.state === 'verification_page';
 
       await completeNodeFromBackground('submit-signup-email', {
         email: resolvedEmail,
@@ -509,7 +510,8 @@
         accountIdentifier: resolvedEmail,
         nextSignupState: landingResult?.state || 'password_page',
         nextSignupUrl: landingResult?.url || step2Result?.url || '',
-        skippedPasswordStep: landingResult?.state === 'verification_page',
+        skippedPasswordStep,
+        ...(skippedPasswordStep ? { signupVerificationRequestedAt: Date.now() } : {}),
       });
     }
 
