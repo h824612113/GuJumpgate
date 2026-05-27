@@ -1025,22 +1025,6 @@
               await appendRoundRecordIfNeeded('failed', reason, err);
               cancelPendingCommands('当前轮因 Plus 免费试用资格不可用已终止。');
               await broadcastStopToContentScripts();
-              if (!autoRunSkipFailures) {
-                await addLog(
-                  autoRunRetryNonFreeTrial
-                    ? `第 ${targetRun}/${totalRuns} 轮检测到 Plus 今日应付金额非 0，已达到无试用套餐自动重试上限，当前自动运行将停止。`
-                    : `第 ${targetRun}/${totalRuns} 轮检测到 Plus 今日应付金额非 0，自动重试未开启，当前自动运行将停止。`,
-                  'warn'
-                );
-                stoppedEarly = true;
-                await broadcastAutoRunStatus('stopped', {
-                  currentRun: targetRun,
-                  totalRuns,
-                  attemptRun,
-                  sessionId: 0,
-                });
-                break;
-              }
 
               await addLog(`第 ${targetRun}/${totalRuns} 轮没有 Plus 免费试用资格，本轮将直接失败并跳过剩余重试。`, 'warn');
               await addLog(

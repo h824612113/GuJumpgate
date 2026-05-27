@@ -4058,7 +4058,7 @@ function FindProxyForURL(url, host) {
                 ? `${stopReason} 先手机号注册 OAuth 将保留当前注册流程，直接回到第 ${checkoutCreateStep} 步重新创建 Checkout。`
                 : shouldRetryNonFreeTrial
                 ? `${stopReason} 无试用套餐自动重试已开启，将换新邮箱重走流程。`
-                : stopReason,
+                : `${stopReason} 当前轮将结束并交给自动运行继续下一轮。`,
               'warn'
             );
             if (shouldRetryStep7Only && typeof failNodeFromBackground === 'function') {
@@ -4069,10 +4069,11 @@ function FindProxyForURL(url, host) {
               await failNodeFromBackground('plus-checkout-create', `PLUS_CHECKOUT_NON_FREE_TRIAL::${stopReason}`);
               return;
             }
-            if (typeof requestStop === 'function') {
-              await requestStop({ logMessage: false });
+            if (typeof failNodeFromBackground === 'function') {
+              await failNodeFromBackground('plus-checkout-create', `PLUS_CHECKOUT_NON_FREE_TRIAL::${stopReason}`);
               return;
             }
+            throw new Error(`PLUS_CHECKOUT_NON_FREE_TRIAL::${stopReason}`);
           }
           await addLog(`步骤 6：hosted checkout 自动化失败：${message}`, 'error');
           if (typeof failNodeFromBackground === 'function') {
