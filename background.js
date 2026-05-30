@@ -3022,12 +3022,14 @@ async function markCurrentRegistrationAccountUsed(state = {}, options = {}) {
   const icloudResult = await finalizeIcloudAliasAfterSuccessfulFlow(latestState);
   updated = Boolean(icloudResult?.handled) || updated;
 
-  const outlookEmailPlusResult = await markCurrentOutlookEmailPlusAliasUsed(latestState, {
-    logPrefix: reasonPrefix,
-    level: options.level || 'warn',
-    result: 'success',
-  });
-  updated = Boolean(outlookEmailPlusResult?.handled) || updated;
+  if (typeof markCurrentOutlookEmailPlusAliasUsed === 'function') {
+    const outlookEmailPlusResult = await markCurrentOutlookEmailPlusAliasUsed(latestState, {
+      logPrefix: reasonPrefix,
+      level: options.level || 'warn',
+      result: 'success',
+    });
+    updated = Boolean(outlookEmailPlusResult?.handled) || updated;
+  }
 
   if (typeof markCurrentCustomEmailPoolEntryUsed === 'function') {
     const result = await markCurrentCustomEmailPoolEntryUsed(latestState, {
@@ -3127,12 +3129,14 @@ async function markCurrentRegistrationAccountUnavailable(state = {}, options = {
     updated = true;
   }
 
-  const outlookEmailPlusResult = await markCurrentOutlookEmailPlusAliasUsed(latestState, {
-    logPrefix: reasonPrefix,
-    level: options.level || 'warn',
-    result: reasonCode,
-  });
-  updated = Boolean(outlookEmailPlusResult?.handled) || updated;
+  if (typeof markCurrentOutlookEmailPlusAliasUsed === 'function') {
+    const outlookEmailPlusResult = await markCurrentOutlookEmailPlusAliasUsed(latestState, {
+      logPrefix: reasonPrefix,
+      level: options.level || 'warn',
+      result: reasonCode,
+    });
+    updated = Boolean(outlookEmailPlusResult?.handled) || updated;
+  }
 
   if (typeof markCurrentCustomEmailPoolEntryUsed === 'function') {
     const result = await markCurrentCustomEmailPoolEntryUsed(latestState, {
@@ -3142,11 +3146,13 @@ async function markCurrentRegistrationAccountUnavailable(state = {}, options = {
     updated = Boolean(result?.updated) || updated;
   }
 
-  const cleared = await clearCurrentRegistrationEmailRuntimeState(latestState, {
-    reason: reasonCode,
-    reasonLabel,
-  });
-  updated = Boolean(cleared?.updated) || updated;
+  if (typeof clearCurrentRegistrationEmailRuntimeState === 'function') {
+    const cleared = await clearCurrentRegistrationEmailRuntimeState(latestState, {
+      reason: reasonCode,
+      reasonLabel,
+    });
+    updated = Boolean(cleared?.updated) || updated;
+  }
 
   return { updated };
 }

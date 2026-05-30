@@ -252,7 +252,7 @@
           enabled: itemUsage.enabled !== false,
         };
       })
-      .filter((entry) => entry.enabled && entry.useCount < MAX_SUCCESS_USES);
+      .filter((entry) => entry.enabled);
     const normalizedCurrent = parsePoolKey(
       currentEntry?.key
       || buildPoolKey(currentEntry?.phone, currentEntry?.verificationUrl)
@@ -263,16 +263,7 @@
         return currentSelectableEntry;
       }
     }
-    return selectableEntries
-      .sort((left, right) => {
-        if (left.useCount !== right.useCount) {
-          return left.useCount - right.useCount;
-        }
-        if (left.usedAt !== right.usedAt) {
-          return left.usedAt - right.usedAt;
-        }
-        return left.index - right.index;
-      })[0] || null;
+    return selectableEntries[0] || null;
   }
 
   function inferCountryFromPhoneNumber(phoneNumber = '') {
@@ -343,7 +334,7 @@
         ...usage,
         [entry.key]: {
           useCount: options.incrementUseCount
-            ? Math.min(MAX_SUCCESS_USES, Math.max(0, Math.floor(Number(previous.useCount) || 0)) + 1)
+            ? Math.max(0, Math.floor(Number(previous.useCount) || 0)) + 1
             : Math.max(0, Math.floor(Number(previous.useCount) || 0)),
           usedAt: options.incrementUseCount
             ? now

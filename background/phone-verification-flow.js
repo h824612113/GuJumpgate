@@ -7851,39 +7851,13 @@
                 continue;
               }
 
-              const requestAdditionalResult = await requestAdditionalPhoneSms(state, activation);
-              const nextActivation = normalizeActivation(
-                requestAdditionalResult?.activation
-                || requestAdditionalResult?.nextActivation
-                || requestAdditionalResult
-              );
-              if (nextActivation) {
-                activation = nextActivation;
-                await setPhoneRuntimeState({
-                  signupPhoneActivation: nextActivation,
-                  signupPhoneNumber: nextActivation.phoneNumber,
-                });
-              }
-              try {
-                await resendLoginPhoneVerificationCode(tabId, { visibleStep });
-              } catch (resendError) {
-                if (isStopRequestedError(resendError)) {
-                  throw resendError;
-                }
-                if (isPhoneResendServerError(resendError)) {
-                  throw buildPhoneResendServerError(resendError);
-                }
-                await addLog(`步骤 ${visibleStep}：登录手机验证码被拒后点击重发失败。${resendError.message}`, 'warn', {
-                  step: visibleStep,
-                  stepKey: 'fetch-login-code',
-                });
-              }
-              await addLog(
-                `步骤 ${visibleStep}：登录手机验证码被拒绝，已请求新短信（${attempt + 1}/${DEFAULT_PHONE_SUBMIT_ATTEMPTS}）。`,
-                'warn',
-                { step: visibleStep, stepKey: 'fetch-login-code' }
-              );
-              continue;
+              await finalizeLoginPhoneActivationAfterSuccess(state, activation, { visibleStep });
+              shouldCancelActivation = false;
+              await addLog(`步骤 ${visibleStep}：登录手机验证码已通过，继续进入后续授权流程。`, 'ok', {
+                step: visibleStep,
+                stepKey: 'fetch-login-code',
+              });
+              return submitResult || {};
             }
           }
         } catch (error) {
