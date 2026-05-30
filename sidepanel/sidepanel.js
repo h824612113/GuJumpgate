@@ -116,6 +116,25 @@ const rowSub2ApiAccountPriority = document.getElementById('row-sub2api-account-p
 const inputSub2ApiAccountPriority = document.getElementById('input-sub2api-account-priority');
 const rowSub2ApiDefaultProxy = document.getElementById('row-sub2api-default-proxy');
 const inputSub2ApiDefaultProxy = document.getElementById('input-sub2api-default-proxy');
+const rowSub2ApiErrorRefreshEnabled = document.getElementById('row-sub2api-error-refresh-enabled');
+const inputSub2ApiErrorRefreshEnabled = document.getElementById('input-sub2api-error-refresh-enabled');
+const rowSub2ApiErrorRefreshActions = document.getElementById('row-sub2api-error-refresh-actions');
+const btnStartSub2ApiErrorRefresh = document.getElementById('btn-start-sub2api-error-refresh');
+const rowSub2ApiErrorRefreshStats = document.getElementById('row-sub2api-error-refresh-stats');
+const rowSub2ApiErrorRefreshResult = document.getElementById('row-sub2api-error-refresh-result');
+const sub2ApiErrorRefreshTotal = document.getElementById('sub2api-error-refresh-total');
+const sub2ApiErrorRefreshProcessed = document.getElementById('sub2api-error-refresh-processed');
+const sub2ApiErrorRefreshSuccess = document.getElementById('sub2api-error-refresh-success');
+const sub2ApiErrorRefreshDeleted = document.getElementById('sub2api-error-refresh-deleted');
+const sub2ApiErrorRefreshNotFound = document.getElementById('sub2api-error-refresh-not-found');
+const sub2ApiErrorRefreshRatio = document.getElementById('sub2api-error-refresh-ratio');
+const sub2ApiErrorRefreshCurrentEmail = document.getElementById('sub2api-error-refresh-current-email');
+const sub2ApiErrorRefreshLastSummary = document.getElementById('sub2api-error-refresh-last-summary');
+const sub2ApiErrorRefreshHistoryPath = document.getElementById('sub2api-error-refresh-history-path');
+const sub2ApiErrorRefreshAllList = document.getElementById('sub2api-error-refresh-all-list');
+const sub2ApiErrorRefreshNotFoundList = document.getElementById('sub2api-error-refresh-not-found-list');
+const sub2ApiErrorRefreshDeletedList = document.getElementById('sub2api-error-refresh-deleted-list');
+const sub2ApiErrorRefreshRevivedList = document.getElementById('sub2api-error-refresh-revived-list');
 const rowIpProxyEnabled = document.getElementById('row-ip-proxy-enabled');
 const inputIpProxyEnabled = document.getElementById('input-ip-proxy-enabled');
 const btnToggleIpProxySection = document.getElementById('btn-toggle-ip-proxy-section');
@@ -5029,6 +5048,7 @@ function collectSettingsPayload() {
         : latestState?.sub2apiAccountPriority
     ),
     sub2apiDefaultProxyName: inputSub2ApiDefaultProxy.value.trim(),
+    sub2apiErrorRefreshEnabled: Boolean(inputSub2ApiErrorRefreshEnabled?.checked),
     ipProxyEnabled: getSelectedIpProxyEnabledSafe(),
     ipProxyService: selectedIpProxyService,
     ipProxyMode: currentIpProxyServiceProfile.mode,
@@ -5361,7 +5381,11 @@ function normalizeAccountRunHistoryHelperBaseUrlValue(value = '') {
       return DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL;
     }
 
-    if (parsed.pathname === '/append-account-log' || parsed.pathname === '/sync-account-run-records') {
+    if ([
+      '/append-account-log',
+      '/sync-account-run-records',
+      '/sync-sub2api-error-refresh-records',
+    ].includes(parsed.pathname)) {
       parsed.pathname = '';
       parsed.search = '';
       parsed.hash = '';
@@ -11984,6 +12008,11 @@ function applySettingsState(state) {
     inputSub2ApiAccountPriority.value = String(normalizeSub2ApiAccountPriorityValue(state?.sub2apiAccountPriority));
   }
   inputSub2ApiDefaultProxy.value = state?.sub2apiDefaultProxyName || '';
+  if (typeof inputSub2ApiErrorRefreshEnabled !== 'undefined' && inputSub2ApiErrorRefreshEnabled) {
+    inputSub2ApiErrorRefreshEnabled.checked = Boolean(state?.sub2apiErrorRefreshEnabled);
+  }
+  renderSub2ApiErrorRefreshStats(state);
+  renderSub2ApiErrorRefreshLatestHistory(state);
   const normalizedIpProxyService = resolveIpProxyService(state?.ipProxyService);
   const normalizedIpProxyServiceProfiles = typeof normalizeIpProxyServiceProfiles === 'function'
     ? normalizeIpProxyServiceProfiles(state?.ipProxyServiceProfiles || {}, state || {})
@@ -12059,6 +12088,7 @@ function applySettingsState(state) {
   if (typeof setIpProxyEnabled === 'function') {
     setIpProxyEnabled(Boolean(state?.ipProxyEnabled));
   }
+  renderSub2ApiErrorRefreshStats(state);
   syncLatestState({
     ipProxyService: normalizedIpProxyService,
     ipProxyServiceProfiles: normalizedIpProxyServiceProfiles,
@@ -12506,6 +12536,18 @@ function applySettingsState(state) {
 async function restoreState() {
   try {
     const state = await chrome.runtime.sendMessage({ type: 'GET_STATE', source: 'sidepanel' });
+    try {
+      const historyResponse = await chrome.runtime.sendMessage({
+        type: 'GET_SUB2API_ERROR_REFRESH_HISTORY',
+        source: 'sidepanel',
+      });
+      if (historyResponse?.ok && Array.isArray(historyResponse.history)) {
+        state.sub2apiErrorRefreshHistory = historyResponse.history;
+      }
+      if (historyResponse?.ok && historyResponse.filePath !== undefined) {
+        state.sub2apiErrorRefreshHistoryPath = String(historyResponse.filePath || '').trim();
+      }
+    } catch {}
     applySettingsState(state);
     if (getSelectedEmailGenerator() === 'icloud' && icloudSection?.style.display !== 'none') {
       refreshIcloudAliases({ silent: true }).catch(() => { });
@@ -14361,6 +14403,10 @@ function updatePanelModeUI() {
   setRowDisplay(rowSub2ApiGroup, useSub2Api);
   setRowDisplay(rowSub2ApiAccountPriority, useSub2Api);
   setRowDisplay(rowSub2ApiDefaultProxy, useSub2Api);
+  setRowDisplay(rowSub2ApiErrorRefreshEnabled, useSub2Api);
+  setRowDisplay(rowSub2ApiErrorRefreshActions, useSub2Api);
+  setRowDisplay(rowSub2ApiErrorRefreshStats, useSub2Api);
+  setRowDisplay(rowSub2ApiErrorRefreshResult, useSub2Api);
   setRowDisplay(rowCodex2ApiUrl, useCodex2Api);
   setRowDisplay(rowCodex2ApiAdminKey, useCodex2Api);
 
@@ -14459,6 +14505,149 @@ function updateProgressCounter() {
   }
   const completed = Object.values(getStepStatuses()).filter(isDoneStatus).length;
   stepsProgress.textContent = `${completed} / ${STEP_IDS.length}`;
+}
+
+function renderSub2ApiErrorRefreshStats(state = latestState) {
+  const stats = state?.sub2apiErrorRefreshStats || {};
+  if (sub2ApiErrorRefreshTotal) {
+    sub2ApiErrorRefreshTotal.textContent = String(stats.totalRemoteErrors || 0);
+  }
+  if (sub2ApiErrorRefreshProcessed) {
+    sub2ApiErrorRefreshProcessed.textContent = String(stats.processedCount || 0);
+  }
+  if (sub2ApiErrorRefreshSuccess) {
+    sub2ApiErrorRefreshSuccess.textContent = String(stats.revivedSuccessCount || 0);
+  }
+  if (sub2ApiErrorRefreshDeleted) {
+    sub2ApiErrorRefreshDeleted.textContent = String(stats.deletedAfterReauthFailedCount || 0);
+  }
+  if (sub2ApiErrorRefreshNotFound) {
+    sub2ApiErrorRefreshNotFound.textContent = String(stats.notFoundLocallyCount || 0);
+  }
+  if (sub2ApiErrorRefreshRatio) {
+    sub2ApiErrorRefreshRatio.textContent = String(stats.revivalRatioText || '0/0');
+  }
+  if (sub2ApiErrorRefreshCurrentEmail) {
+    sub2ApiErrorRefreshCurrentEmail.textContent = String(state?.sub2apiErrorRefreshCurrentEmail || '-');
+  }
+  if (btnStartSub2ApiErrorRefresh) {
+    btnStartSub2ApiErrorRefresh.disabled = Boolean(state?.sub2apiErrorRefreshRunning) || !Boolean(state?.sub2apiErrorRefreshEnabled);
+    btnStartSub2ApiErrorRefresh.textContent = Boolean(state?.sub2apiErrorRefreshRunning) ? '刷新中' : '开始刷新';
+  }
+}
+
+function formatSub2ApiErrorRefreshHistoryTime(value) {
+  const time = Date.parse(String(value || ''));
+  if (!Number.isFinite(time)) {
+    return '';
+  }
+  const date = new Date(time);
+  const month = `${date.getMonth() + 1}`.padStart(2, '0');
+  const day = `${date.getDate()}`.padStart(2, '0');
+  const hours = `${date.getHours()}`.padStart(2, '0');
+  const minutes = `${date.getMinutes()}`.padStart(2, '0');
+  return `${month}-${day} ${hours}:${minutes}`;
+}
+
+function renderSub2ApiErrorRefreshResultList(container, entries = []) {
+  if (!container) {
+    return;
+  }
+  const normalizedEntries = Array.isArray(entries) ? entries : [];
+  container.innerHTML = '';
+  container.classList.toggle('is-empty', normalizedEntries.length === 0);
+  if (!normalizedEntries.length) {
+    container.textContent = '暂无记录';
+    return;
+  }
+  normalizedEntries.forEach((entry) => {
+    const chip = document.createElement('span');
+    chip.className = 'sub2api-refresh-result-chip';
+    chip.textContent = String(entry?.email || '').trim() || '-';
+    const reason = String(entry?.reason || '').trim();
+    if (reason) {
+      chip.title = reason;
+    }
+    container.appendChild(chip);
+  });
+}
+
+function renderSub2ApiErrorRefreshAllEntryList(container, entries = []) {
+  if (!container) {
+    return;
+  }
+  const normalizedEntries = Array.isArray(entries) ? entries : [];
+  container.innerHTML = '';
+  container.classList.toggle('is-empty', normalizedEntries.length === 0);
+  if (!normalizedEntries.length) {
+    container.textContent = '暂无记录';
+    return;
+  }
+  normalizedEntries.forEach((entry) => {
+    const item = document.createElement('div');
+    item.className = 'sub2api-refresh-entry-item';
+
+    const top = document.createElement('div');
+    top.className = 'sub2api-refresh-entry-top';
+
+    const email = document.createElement('span');
+    email.className = 'sub2api-refresh-entry-email';
+    email.textContent = String(entry?.email || '').trim() || '-';
+    top.appendChild(email);
+
+    const status = document.createElement('span');
+    status.className = 'sub2api-refresh-entry-status';
+    status.dataset.status = String(entry?.status || '').trim() || 'pending';
+    status.textContent = String(entry?.statusLabel || '').trim() || '待刷新';
+    top.appendChild(status);
+    item.appendChild(top);
+
+    const reasonText = [
+      String(entry?.reason || '').trim(),
+      String(entry?.planType || '').trim() ? `planType=${String(entry.planType).trim()}` : '',
+    ].filter(Boolean).join(' · ');
+    if (reasonText) {
+      const reason = document.createElement('div');
+      reason.className = 'sub2api-refresh-entry-reason';
+      reason.textContent = reasonText;
+      item.appendChild(reason);
+    }
+
+    container.appendChild(item);
+  });
+}
+
+function renderSub2ApiErrorRefreshLatestHistory(state = latestState) {
+  const history = Array.isArray(state?.sub2apiErrorRefreshHistory) ? state.sub2apiErrorRefreshHistory : [];
+  const latestRun = history[0] || null;
+  if (sub2ApiErrorRefreshHistoryPath) {
+    sub2ApiErrorRefreshHistoryPath.textContent = String(state?.sub2apiErrorRefreshHistoryPath || '未同步');
+  }
+  if (!latestRun) {
+    if (sub2ApiErrorRefreshLastSummary) {
+      sub2ApiErrorRefreshLastSummary.textContent = '暂无记录';
+    }
+    renderSub2ApiErrorRefreshAllEntryList(sub2ApiErrorRefreshAllList, []);
+    renderSub2ApiErrorRefreshResultList(sub2ApiErrorRefreshNotFoundList, []);
+    renderSub2ApiErrorRefreshResultList(sub2ApiErrorRefreshDeletedList, []);
+    renderSub2ApiErrorRefreshResultList(sub2ApiErrorRefreshRevivedList, []);
+    return;
+  }
+
+  if (sub2ApiErrorRefreshLastSummary) {
+    const finishedAt = formatSub2ApiErrorRefreshHistoryTime(latestRun.finishedAt || latestRun.startedAt);
+    sub2ApiErrorRefreshLastSummary.textContent = [
+      finishedAt || '最近一次',
+      `复活 ${Number(latestRun.revivedSuccessCount) || 0}`,
+      `删除 ${Number(latestRun.deletedAfterReauthFailedCount) || 0}`,
+      `未找到 ${Number(latestRun.notFoundLocallyCount) || 0}`,
+    ].join(' · ');
+  }
+
+  renderSub2ApiErrorRefreshAllEntryList(sub2ApiErrorRefreshAllList, latestRun.allEntries);
+  renderSub2ApiErrorRefreshResultList(sub2ApiErrorRefreshNotFoundList, latestRun.notFoundEntries);
+  renderSub2ApiErrorRefreshResultList(sub2ApiErrorRefreshDeletedList, latestRun.deletedEntries);
+  renderSub2ApiErrorRefreshResultList(sub2ApiErrorRefreshRevivedList, latestRun.revivedEntries);
 }
 
 function updateButtonStates() {
@@ -16676,6 +16865,15 @@ selectIcloudForwardMailProvider?.addEventListener('change', () => {
 selectIcloudFetchMode?.addEventListener('change', () => {
   markSettingsDirty(true);
   saveSettings({ silent: true }).catch(() => { });
+});
+
+inputSub2ApiErrorRefreshEnabled?.addEventListener('change', () => {
+  markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
+  renderSub2ApiErrorRefreshStats({
+    ...(latestState || {}),
+    sub2apiErrorRefreshEnabled: Boolean(inputSub2ApiErrorRefreshEnabled.checked),
+  });
 });
 
 checkboxAutoDeleteIcloud?.addEventListener('change', () => {
@@ -18922,6 +19120,22 @@ btnPhoneSmsProviderOrderReset?.addEventListener('click', () => {
   }
 });
 
+btnStartSub2ApiErrorRefresh?.addEventListener('click', async () => {
+  try {
+    await persistCurrentSettingsForAction();
+    const response = await sendRuntimeMessageWithTimeout({
+      type: 'START_SUB2API_ERROR_REFRESH',
+      source: 'sidepanel',
+    }, 30000, '启动 SUB2API 老号刷新');
+    if (response?.error) {
+      throw new Error(response.error);
+    }
+    showToast('已开始执行老号存活同步刷新。', 'success', 1800);
+  } catch (error) {
+    showToast(`启动失败：${error.message}`, 'error');
+  }
+});
+
 // ============================================================
 // Listen for Background broadcasts
 // ============================================================
@@ -19103,6 +19317,20 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
         || message.payload.sub2apiGroupNames !== undefined
       ) {
         renderSub2ApiGroupOptions(latestState, latestState?.sub2apiGroupName || '');
+      }
+      if (
+        message.payload.sub2apiErrorRefreshEnabled !== undefined
+        || message.payload.sub2apiErrorRefreshRunning !== undefined
+        || message.payload.sub2apiErrorRefreshStats !== undefined
+        || message.payload.sub2apiErrorRefreshCurrentEmail !== undefined
+        || message.payload.sub2apiErrorRefreshHistory !== undefined
+        || message.payload.sub2apiErrorRefreshHistoryPath !== undefined
+      ) {
+        if (inputSub2ApiErrorRefreshEnabled) {
+          inputSub2ApiErrorRefreshEnabled.checked = Boolean(latestState?.sub2apiErrorRefreshEnabled);
+        }
+        renderSub2ApiErrorRefreshStats(latestState);
+        renderSub2ApiErrorRefreshLatestHistory(latestState);
       }
       if (
         message.payload.ipProxyEnabled !== undefined

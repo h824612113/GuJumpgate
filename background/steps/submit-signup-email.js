@@ -49,6 +49,11 @@
         );
     }
 
+    function isSignupIdentityRateLimitErrorMessage(errorLike) {
+      const message = getErrorMessage(errorLike);
+      return /rate_limit_exceeded|请求过多|请稍后重试|too\s+many\s+requests/i.test(message);
+    }
+
     function isLikelyLoggedInChatgptHomeUrl(rawUrl) {
       const url = String(rawUrl || '').trim();
       if (!url) {
@@ -519,7 +524,15 @@
       if (resolveSignupMethod(state) === 'phone') {
         return executeSignupPhoneEntry(state);
       }
-      return executeSignupEmailEntry(state);
+      try {
+        return await executeSignupEmailEntry(state);
+      } catch (error) {
+        const message = getErrorMessage(error);
+        if (isSignupIdentityRateLimitErrorMessage(message)) {
+          throw new Error(`SIGNUP_IDENTITY_RATE_LIMIT::步骤 2：提交注册身份后触发 rate_limit_exceeded / 请求过多，当前轮将直接停止。${message ? ` ${message}` : ''}`);
+        }
+        throw error;
+      }
     }
 
     return { executeStep2 };

@@ -20,6 +20,8 @@ importScripts(
   'phone-sms/providers/registry.js',
   'background/phone-verification-flow.js',
   'background/account-run-history.js',
+  'background/sub2api-error-refresh-history.js',
+  'background/sub2api-error-refresh-runner.js',
   'background/contribution-oauth.js',
   'background/mail-2925-session.js',
   'background/paypal-account-store.js',
@@ -768,6 +770,7 @@ const PERSISTENT_ALIAS_STATE_KEYS = [
   'preservedAliases',
   'icloudAliasCache',
   'icloudAliasCacheAt',
+  'sub2apiErrorRefreshHistoryPath',
 ];
 const ACCOUNT_RUN_HISTORY_STORAGE_KEY = 'accountRunHistory';
 const SIGNUP_METHOD_EMAIL = 'email';
@@ -1074,6 +1077,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   sub2apiGroupNames: DEFAULT_SUB2API_GROUP_NAMES,
   sub2apiAccountPriority: DEFAULT_SUB2API_ACCOUNT_PRIORITY,
   sub2apiDefaultProxyName: DEFAULT_SUB2API_PROXY_NAME,
+  sub2apiErrorRefreshEnabled: false,
   ipProxyEnabled: false,
   ipProxyService: DEFAULT_IP_PROXY_SERVICE,
   ipProxyMode: DEFAULT_IP_PROXY_MODE,
@@ -1468,6 +1472,18 @@ const DEFAULT_STATE = {
   sub2apiGroupIds: [], // SUB2API 多目标分组 ID。
   sub2apiDraftName: null, // SUB2API 本轮预生成的账号名称。
   sub2apiProxyId: null, // SUB2API 本轮使用的代理 ID。
+  sub2apiErrorRefreshRunning: false,
+  sub2apiErrorRefreshRunId: '',
+  sub2apiErrorRefreshCurrentEmail: '',
+  sub2apiErrorRefreshStats: {
+    totalRemoteErrors: 0,
+    processedCount: 0,
+    revivedSuccessCount: 0,
+    deletedAfterReauthFailedCount: 0,
+    notFoundLocallyCount: 0,
+    revivalRatioText: '0/0',
+  },
+  sub2apiErrorRefreshHistoryPath: '',
   codex2apiSessionId: null, // Codex2API OAuth 会话 ID。
   codex2apiOAuthState: null, // Codex2API OAuth state。
   plusCheckoutTabId: null, // Plus checkout / PayPal 标签页 ID。
@@ -1479,6 +1495,10 @@ const DEFAULT_STATE = {
   paypalGenericErrorRecoveryCount: 0,
   paypalApprovalBranchRecoveryCount: 0,
   pendingPayPalCookieCleanupBeforeCheckoutCreate: false,
+  plusCheckoutAlreadyPaid: false,
+  plusCheckoutAlreadyPaidAt: 0,
+  plusCheckoutAlreadyPaidDetail: '',
+  plusAlreadyPaidNeedsPostLoginPhoneBind: false,
   hostedCheckoutCurrentSmsEntry: null,
   chatGptApiCurrentSmsEntry: null,
   plusBillingCountryText: '',
@@ -3067,9 +3087,6 @@ async function markCurrentRegistrationAccountUnavailable(state = {}, options = {
           {
             used: true,
             lastUsedAt: Date.now(),
-          },
-          {
-            preserveCurrentSelection: true,
           }
         );
         await addLog(`${reasonPrefix}：Hotmail 账号的别名额度已因${reasonLabel}耗尽，基邮箱已标记为已用。`, options.level || 'warn');
@@ -3081,9 +3098,6 @@ async function markCurrentRegistrationAccountUnavailable(state = {}, options = {
         {
           used: true,
           lastUsedAt: Date.now(),
-        },
-        {
-          preserveCurrentSelection: true,
         }
       );
       await addLog(`${reasonPrefix}：Hotmail 账号因${reasonLabel}已标记为已用。`, options.level || 'warn');
@@ -3263,6 +3277,22 @@ function normalizePlusAccountAccessStrategyForState(state = {}) {
   return PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
 }
 
+function shouldContinueAlreadyPaidWithPostLoginPhoneBind(state = {}) {
+  const panelMode = typeof getPanelMode === 'function'
+    ? getPanelMode(state)
+    : normalizePanelMode(state?.panelMode);
+  return panelMode === 'sub2api'
+    && Boolean(state?.plusModeEnabled)
+    && Boolean(state?.phoneVerificationEnabled)
+    && normalizePlusAccountAccessStrategyForState(state) === PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH;
+}
+
+function isAlreadyPaidPostLoginPhoneBindPending(state = {}) {
+  return shouldContinueAlreadyPaidWithPostLoginPhoneBind(state)
+    && Boolean(state?.plusCheckoutAlreadyPaid)
+    && Boolean(state?.plusAlreadyPaidNeedsPostLoginPhoneBind);
+}
+
 function normalizeMailProvider(value = '') {
   const normalized = String(value || '').trim().toLowerCase();
   switch (normalized) {
@@ -3422,7 +3452,11 @@ function normalizeAccountRunHistoryHelperBaseUrl(rawValue = '') {
 
   try {
     const parsed = new URL(value);
-    if (parsed.pathname === '/append-account-log' || parsed.pathname === '/sync-account-run-records') {
+    if ([
+      '/append-account-log',
+      '/sync-account-run-records',
+      '/sync-sub2api-error-refresh-records',
+    ].includes(parsed.pathname)) {
       parsed.pathname = '';
       parsed.search = '';
       parsed.hash = '';
@@ -3611,6 +3645,87 @@ function normalizeSub2ApiAccountPriority(value, fallback = DEFAULT_SUB2API_ACCOU
   return numeric;
 }
 
+function normalizeRefreshRunnerPlanType(value = '') {
+  return String(value || '').trim().toLowerCase().replace(/\s+/g, '_');
+}
+
+function isRefreshRunnerPaidPlanType(value = '') {
+  const normalized = normalizeRefreshRunnerPlanType(value);
+  if (!normalized) {
+    return false;
+  }
+  return !/(^|[_-])(free|guest|basic|default|none|null|unknown)([_-]|$)/i.test(normalized);
+}
+
+function collectRefreshRunnerSessionFieldValues(rootValue, targetKeys = []) {
+  const normalizedTargets = new Set(
+    (Array.isArray(targetKeys) ? targetKeys : [])
+      .map((entry) => String(entry || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+  if (!normalizedTargets.size || !rootValue || typeof rootValue !== 'object') {
+    return [];
+  }
+  const queue = [{ value: rootValue, path: 'session' }];
+  const visited = new Set();
+  const results = [];
+  while (queue.length) {
+    const current = queue.shift();
+    if (!current?.value || typeof current.value !== 'object') {
+      continue;
+    }
+    if (visited.has(current.value)) {
+      continue;
+    }
+    visited.add(current.value);
+    const entries = Array.isArray(current.value)
+      ? current.value.map((entry, index) => [String(index), entry])
+      : Object.entries(current.value);
+    for (const [key, entryValue] of entries) {
+      const normalizedKey = String(key || '').trim().toLowerCase();
+      const path = `${current.path}.${key}`;
+      if (normalizedTargets.has(normalizedKey)) {
+        results.push({ key: normalizedKey, path, value: entryValue });
+      }
+      if (entryValue && typeof entryValue === 'object') {
+        queue.push({ value: entryValue, path });
+      }
+    }
+  }
+  return results;
+}
+
+function inspectPlusActivationFromSessionForRefresh(session = null) {
+  const planSignals = collectRefreshRunnerSessionFieldValues(session, [
+    'planType',
+    'plan_type',
+    'chatgpt_plan_type',
+  ]);
+  const booleanSignals = collectRefreshRunnerSessionFieldValues(session, [
+    'isPaid',
+    'is_paid',
+    'hasActiveSubscription',
+    'has_active_subscription',
+    'subscriptionActive',
+    'subscription_active',
+    'isSubscribed',
+    'is_subscribed',
+  ]);
+  const planType = [
+    ...planSignals.map((entry) => typeof entry?.value === 'string' ? entry.value : ''),
+    session?.account?.planType,
+    session?.account?.plan_type,
+    session?.planType,
+    session?.plan_type,
+  ].map((value) => String(value || '').trim()).find(Boolean) || '';
+  const paidSignal = booleanSignals.some((entry) => entry?.value === true);
+  return {
+    active: paidSignal || isRefreshRunnerPaidPlanType(planType),
+    paidSignal,
+    planType,
+  };
+}
+
 function normalizePersistentSettingValue(key, value) {
   switch (key) {
     case 'panelMode':
@@ -3635,6 +3750,8 @@ function normalizePersistentSettingValue(key, value) {
       return normalizeSub2ApiAccountPriority(value);
     case 'sub2apiDefaultProxyName':
       return String(value || '').trim();
+    case 'sub2apiErrorRefreshEnabled':
+      return Boolean(value);
     case 'ipProxyEnabled':
       return Boolean(value);
     case 'ipProxyService':
@@ -4489,12 +4606,13 @@ async function getPersistedAliasState() {
     const preservedAliases = normalizeBooleanMap(stored.preservedAliases);
     return {
       manualAliasUsage,
-    preservedAliases,
-    icloudAliasCache: normalizeIcloudAliasCacheList(stored.icloudAliasCache, {
-      usedEmails: toNormalizedEmailSet(manualAliasUsage),
-      preservedEmails: toNormalizedEmailSet(preservedAliases),
-    }),
+      preservedAliases,
+      icloudAliasCache: normalizeIcloudAliasCacheList(stored.icloudAliasCache, {
+        usedEmails: toNormalizedEmailSet(manualAliasUsage),
+        preservedEmails: toNormalizedEmailSet(preservedAliases),
+      }),
       icloudAliasCacheAt: Math.max(0, Number(stored.icloudAliasCacheAt) || 0),
+      sub2apiErrorRefreshHistoryPath: String(stored.sub2apiErrorRefreshHistoryPath || '').trim(),
     };
   } catch (err) {
     console.warn(LOG_PREFIX, 'Failed to read persisted iCloud alias state:', err?.message || err);
@@ -4503,6 +4621,7 @@ async function getPersistedAliasState() {
       preservedAliases: {},
       icloudAliasCache: [],
       icloudAliasCacheAt: 0,
+      sub2apiErrorRefreshHistoryPath: '',
     };
   }
 }
@@ -4557,6 +4676,9 @@ async function setState(updates) {
     }
     if (Object.prototype.hasOwnProperty.call(sessionUpdates, 'icloudAliasCacheAt')) {
       persistentAliasUpdates.icloudAliasCacheAt = Math.max(0, Number(sessionUpdates.icloudAliasCacheAt) || 0);
+    }
+    if (Object.prototype.hasOwnProperty.call(sessionUpdates, 'sub2apiErrorRefreshHistoryPath')) {
+      persistentAliasUpdates.sub2apiErrorRefreshHistoryPath = String(sessionUpdates.sub2apiErrorRefreshHistoryPath || '').trim();
     }
     if (Object.keys(persistentAliasUpdates).length > 0) {
       await chrome.storage.local.set(persistentAliasUpdates);
@@ -6237,6 +6359,32 @@ function buildHotmailMailApiFailureAccount(account, errorMessage) {
   });
 }
 
+function isHotmailAccountAuthorizationFailureMessage(errorMessage = '') {
+  const normalizedMessage = String(errorMessage || '').trim().toLowerCase();
+  if (!normalizedMessage) {
+    return false;
+  }
+  return normalizedMessage.includes('invalid_grant')
+    || normalizedMessage.includes('aadsts70000')
+    || normalizedMessage.includes('refresh token is empty')
+    || normalizedMessage.includes('hint=refresh_token_or_scope_invalid')
+    || (
+      normalizedMessage.includes('token refresh failed')
+      && (
+        normalizedMessage.includes('refresh_token')
+        || normalizedMessage.includes('refresh token')
+      )
+    );
+}
+
+async function persistHotmailAccountAuthorizationFailure(account, errorMessage) {
+  if (!account?.id || !isHotmailAccountAuthorizationFailureMessage(errorMessage)) {
+    return null;
+  }
+  const failedAccount = buildHotmailMailApiFailureAccount(account, errorMessage);
+  return upsertHotmailAccount(failedAccount);
+}
+
 async function fetchHotmailMailboxMessagesFromRemoteService(account, mailboxes = HOTMAIL_MAILBOXES) {
   let workingAccount = normalizeHotmailAccount(account);
   const mailboxResults = [];
@@ -6322,7 +6470,9 @@ async function requestHotmailLocalMessages(account, mailboxes = HOTMAIL_MAILBOXE
 
   if (!response.ok || payload?.ok === false) {
     const errorText = payload?.error || payload?.message || text || `HTTP ${response.status}`;
-    throw new Error(`Hotmail 本地助手返回失败：${errorText}`);
+    const failureMessage = `Hotmail 本地助手返回失败：${errorText}`;
+    await persistHotmailAccountAuthorizationFailure(account, failureMessage);
+    throw new Error(failureMessage);
   }
 
   const rawMessages = Array.isArray(payload?.messages) ? payload.messages : [];
@@ -6414,7 +6564,9 @@ async function requestHotmailLocalCode(account, pollPayload = {}) {
 
   if (!response.ok || payload?.ok === false) {
     const errorText = payload?.error || payload?.message || text || `HTTP ${response.status}`;
-    throw new Error(`Hotmail 本地助手返回失败：${errorText}`);
+    const failureMessage = `Hotmail 本地助手返回失败：${errorText}`;
+    await persistHotmailAccountAuthorizationFailure(account, failureMessage);
+    throw new Error(failureMessage);
   }
 
   const normalizedMessage = payload?.message
@@ -10817,6 +10969,22 @@ function isRestartCurrentAttemptError(error) {
   return /当前邮箱已存在，需要重新开始新一轮|SIGNUP_PHONE_PASSWORD_MISMATCH::/i.test(message);
 }
 
+function isSignupIdentityProviderMismatchFailure(error) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.isSignupIdentityProviderMismatchFailure) {
+    return loggingStatus.isSignupIdentityProviderMismatchFailure(error);
+  }
+  const message = getErrorMessage(error);
+  return /SIGNUP_IDENTITY_PROVIDER_MISMATCH::|identity_provider_mismatch|different\s+identity\s+verification\s+method|different\s+authentication\s+method|注册时不同的身份验证方式|使用注册时使用的身份验证方式重试/i.test(message);
+}
+
+function isSignupAccountDeactivatedFailure(error) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.isSignupAccountDeactivatedFailure) {
+    return loggingStatus.isSignupAccountDeactivatedFailure(error);
+  }
+  const message = getErrorMessage(error);
+  return /SIGNUP_ACCOUNT_DEACTIVATED::|account_deactivated|账户(?:已被)?(?:删除|停用)|账号(?:已被)?(?:删除|停用)|account\s+has\s+been\s+(?:deleted|deactivated)|you\s+do\s+not\s+have\s+an?\s+account\s+because\s+it\s+has\s+been\s+(?:deleted|deactivated)/i.test(message);
+}
+
 function isSignupPhonePasswordMismatchFailure(error) {
   const message = getErrorMessage(error);
   return /SIGNUP_PHONE_PASSWORD_MISMATCH::/i.test(message);
@@ -11070,6 +11238,30 @@ function isSignupUserAlreadyExistsFailure(error) {
   return /SIGNUP_USER_ALREADY_EXISTS::|user_already_exists/i.test(message);
 }
 
+function isSignupIdentityRateLimitFailure(error) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.isSignupIdentityRateLimitFailure) {
+    return loggingStatus.isSignupIdentityRateLimitFailure(error);
+  }
+  const message = getErrorMessage(error);
+  return /SIGNUP_IDENTITY_RATE_LIMIT::|rate_limit_exceeded|请求过多|too\s+many\s+requests/i.test(message);
+}
+
+function isStep5StaleSignupVerificationFailure(error) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.isStep5StaleSignupVerificationFailure) {
+    return loggingStatus.isStep5StaleSignupVerificationFailure(error);
+  }
+  const message = getErrorMessage(error);
+  return /STEP5_STALE_SIGNUP_VERIFICATION::|步骤\s*5：资料页启动时认证页仍停留在邮箱验证码阶段/i.test(message);
+}
+
+function isAutoRunNextRoundPageFailure(error) {
+  if (typeof loggingStatus !== 'undefined' && loggingStatus?.isAutoRunNextRoundPageFailure) {
+    return loggingStatus.isAutoRunNextRoundPageFailure(error);
+  }
+  const message = getErrorMessage(error);
+  return /内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|did not respond in \d+s|Receiving end does not exist|message channel closed|A listener indicated an asynchronous response|port closed before a response was received|等待注册身份提交后的页面跳转超时|注册身份提交后未能识别当前页面|注册身份提交后进入认证错误页/i.test(message);
+}
+
 function isStep8EmailInUseFailure(error) {
   const message = getErrorMessage(error);
   return /STEP8_EMAIL_IN_USE::|email_in_use on add-email verification page/i.test(message);
@@ -11077,6 +11269,110 @@ function isStep8EmailInUseFailure(error) {
 
 function isRegistrationIdentityConflictFailure(error) {
   return isSignupUserAlreadyExistsFailure(error) || isStep8EmailInUseFailure(error);
+}
+
+function isStep5StaleSignupVerificationIdentityConflict(error) {
+  const message = getErrorMessage(error);
+  return isStep5StaleSignupVerificationFailure(error)
+    && /identity_provider_mismatch|different\s+identity\s+verification\s+method|different\s+authentication\s+method|注册时不同的身份验证方式|使用注册时使用的身份验证方式重试/i.test(message);
+}
+
+function getRegistrationAccountUnavailableMarking(error) {
+  if (isRegistrationIdentityConflictFailure(error)) {
+    return {
+      logPrefix: '检测到当前注册邮箱不可再用',
+      reason: isStep8EmailInUseFailure(error) ? 'email_in_use' : 'user_already_exists',
+      reasonLabel: isStep8EmailInUseFailure(error) ? '邮箱已被使用' : '账号已存在',
+    };
+  }
+
+  if (isSignupIdentityProviderMismatchFailure(error)) {
+    return {
+      logPrefix: '检测到当前注册邮箱命中身份验证方式冲突',
+      reason: 'identity_provider_mismatch',
+      reasonLabel: '身份验证方式冲突',
+    };
+  }
+
+  if (isStep5StaleSignupVerificationFailure(error)) {
+    if (isStep5StaleSignupVerificationIdentityConflict(error)) {
+      return {
+        logPrefix: '检测到当前注册邮箱命中身份验证方式冲突',
+        reason: 'identity_provider_mismatch',
+        reasonLabel: '身份验证方式冲突',
+      };
+    }
+
+    return {
+      logPrefix: '检测到当前注册邮箱命中认证页残留',
+      reason: 'stale_signup_verification',
+      reasonLabel: '认证页残留',
+    };
+  }
+
+  if (typeof isSignupIdentityRateLimitFailure === 'function' && isSignupIdentityRateLimitFailure(error)) {
+    return {
+      logPrefix: '检测到当前注册邮箱命中注册身份限流',
+      reason: 'signup_identity_rate_limit',
+      reasonLabel: '注册身份限流',
+    };
+  }
+
+  if (isSignupAccountDeactivatedFailure(error)) {
+    return {
+      logPrefix: '检测到当前注册邮箱对应账号已删除或停用',
+      reason: 'account_deactivated',
+      reasonLabel: '账号已删除或停用',
+    };
+  }
+
+  if (typeof isPlusCheckoutNonFreeTrialFailure === 'function' && isPlusCheckoutNonFreeTrialFailure(error)) {
+    return {
+      logPrefix: '检测到当前注册邮箱没有免费试用资格',
+      reason: 'plus_non_free_trial',
+      reasonLabel: '没有免费试用资格',
+    };
+  }
+
+  if (typeof isCloudCheckoutAlreadyPaidFailure === 'function' && isCloudCheckoutAlreadyPaidFailure(error)) {
+    return {
+      logPrefix: '检测到当前注册邮箱已是 Plus 账号',
+      reason: 'plus_already_paid',
+      reasonLabel: '账号已是 Plus',
+    };
+  }
+
+  return null;
+}
+
+function shouldFetchSignupCodeFailureAdvanceToNextRound(error) {
+  const marking = typeof getRegistrationAccountUnavailableMarking === 'function'
+    ? getRegistrationAccountUnavailableMarking(error)
+    : null;
+  if (marking?.reason) {
+    return true;
+  }
+  return typeof isAutoRunNextRoundPageFailure === 'function'
+    && isAutoRunNextRoundPageFailure(error);
+}
+
+function getFetchSignupCodeFailureHandling(error, options = {}) {
+  const mail2925Terminated = Boolean(options.mail2925Terminated);
+  const phoneResendBanned = Boolean(options.phoneResendBanned);
+
+  if (isSignupUserAlreadyExistsFailure(error)) {
+    return 'throw';
+  }
+  if (shouldFetchSignupCodeFailureAdvanceToNextRound(error)) {
+    return 'throw';
+  }
+  if (mail2925Terminated) {
+    return 'throw';
+  }
+  if (isSignupPhonePasswordMismatchFailure(error) || phoneResendBanned) {
+    return 'restart_phone';
+  }
+  return 'restart_email';
 }
 
 function isStep4Route405RecoveryLimitFailure(error) {
@@ -11276,6 +11572,10 @@ function getDownstreamStateResets(step, state = {}) {
     plusCheckoutSource: '',
     paypalApprovalBranchRecoveryCount: 0,
     pendingPayPalCookieCleanupBeforeCheckoutCreate: false,
+    plusCheckoutAlreadyPaid: false,
+    plusCheckoutAlreadyPaidAt: 0,
+    plusCheckoutAlreadyPaidDetail: '',
+    plusAlreadyPaidNeedsPostLoginPhoneBind: false,
     plusBillingCountryText: '',
     plusBillingAddress: null,
     plusPaypalApprovedAt: null,
@@ -11541,6 +11841,81 @@ async function invalidateDownstreamAfterNodeRestart(nodeId, options = {}) {
     }
     await addLog(`${logLabel}，已重置后续节点状态：${changedNodes.join(', ')}`, 'warn');
   }
+}
+
+function resolveAlreadyPaidPhoneBindRecoveryNodeId(state = {}) {
+  const nodeIds = getAutoRunWorkflowNodeIds(state);
+  if (!nodeIds.length) {
+    return '';
+  }
+  const confirmOauthIndex = nodeIds.indexOf('confirm-oauth');
+  const candidateIds = ['post-bound-email-phone-verification', 'post-login-phone-verification'];
+  for (const candidateId of candidateIds) {
+    const candidateIndex = nodeIds.indexOf(candidateId);
+    if (candidateIndex < 0) {
+      continue;
+    }
+    if (confirmOauthIndex >= 0 && candidateIndex > confirmOauthIndex) {
+      continue;
+    }
+    return candidateId;
+  }
+  return '';
+}
+
+async function recoverAlreadyPaidPostLoginPhoneBindAutoRunState(options = {}) {
+  const {
+    state = {},
+    visibleStep = 0,
+    sourceNodeId = '',
+    reason = '',
+  } = options;
+  if (!isAlreadyPaidPostLoginPhoneBindPending(state)) {
+    return '';
+  }
+
+  const recoveryNodeId = resolveAlreadyPaidPhoneBindRecoveryNodeId(state);
+  if (!recoveryNodeId) {
+    return '';
+  }
+
+  const nodeStatuses = { ...(state.nodeStatuses || {}) };
+  const changedNodeIds = [];
+  for (const nodeId of [recoveryNodeId, 'confirm-oauth', 'platform-verify']) {
+    if (!nodeId || nodeStatuses[nodeId] === 'pending') {
+      continue;
+    }
+    nodeStatuses[nodeId] = 'pending';
+    changedNodeIds.push(nodeId);
+  }
+
+  const runtimeResets = {
+    localhostUrl: null,
+    pendingPhoneActivationConfirmation: null,
+    oauthFlowDeadlineAt: null,
+    oauthFlowDeadlineSourceUrl: null,
+    currentPhoneVerificationCode: '',
+    currentPhoneVerificationCountdownEndsAt: 0,
+    currentPhoneVerificationCountdownWindowIndex: 0,
+    currentPhoneVerificationCountdownWindowTotal: 0,
+  };
+  await setState({
+    ...(changedNodeIds.length ? { nodeStatuses } : {}),
+    ...runtimeResets,
+  });
+  if (changedNodeIds.length) {
+    for (const changedNodeId of changedNodeIds) {
+      chrome.runtime.sendMessage({
+        type: 'NODE_STATUS_CHANGED',
+        payload: { nodeId: changedNodeId, status: 'pending' },
+      }).catch(() => { });
+    }
+  }
+  await addLog(
+    `步骤 ${visibleStep || '当前'}：账号已开通 Plus，但后续授权进入手机号页面，已切回节点 ${recoveryNodeId} 继续补绑手机。${reason ? ` 原因：${reason}` : ''}`.trim(),
+    'warn'
+  );
+  return recoveryNodeId;
 }
 
 function clearStopRequest() {
@@ -13394,13 +13769,12 @@ async function executeNode(nodeId, options = {}) {
       await handleBrowserSwitchRequired(err);
       throw new Error(STOP_ERROR_MESSAGE);
     }
-    if (isRegistrationIdentityConflictFailure(err)) {
+    const registrationAccountUnavailableMarking = getRegistrationAccountUnavailableMarking(err);
+    if (registrationAccountUnavailableMarking) {
       try {
         await markCurrentRegistrationAccountUnavailable(errorState, {
-          logPrefix: '检测到当前注册邮箱不可再用',
           level: 'warn',
-          reason: isStep8EmailInUseFailure(err) ? 'email_in_use' : 'user_already_exists',
-          reasonLabel: isStep8EmailInUseFailure(err) ? '邮箱已被使用' : '账号已存在',
+          ...registrationAccountUnavailableMarking,
         });
       } catch (markError) {
         console.warn(LOG_PREFIX, `Failed to mark registration account unavailable after ${normalizedNodeId} error:`, getErrorMessage(markError));
@@ -13478,13 +13852,12 @@ async function executeNodeAndWait(nodeId, delayAfter = 2000) {
       try {
         await validateStep5PostCompletion(signupTabId, completionPayload || {});
       } catch (step5ValidationError) {
-        if (isRegistrationIdentityConflictFailure(step5ValidationError)) {
+        const registrationAccountUnavailableMarking = getRegistrationAccountUnavailableMarking(step5ValidationError);
+        if (registrationAccountUnavailableMarking) {
           try {
             await markCurrentRegistrationAccountUnavailable(await getState(), {
-              logPrefix: '检测到当前注册邮箱不可再用',
               level: 'warn',
-              reason: isStep8EmailInUseFailure(step5ValidationError) ? 'email_in_use' : 'user_already_exists',
-              reasonLabel: isStep8EmailInUseFailure(step5ValidationError) ? '邮箱已被使用' : '账号已存在',
+              ...registrationAccountUnavailableMarking,
             });
           } catch (markError) {
             console.warn(LOG_PREFIX, 'Failed to mark registration account unavailable after step 5 validation error:', getErrorMessage(markError));
@@ -13773,6 +14146,15 @@ const accountRunHistoryHelpers = self.MultiPageBackgroundAccountRunHistory?.crea
   getState,
   normalizeAccountRunHistoryHelperBaseUrl,
 });
+const sub2ApiErrorRefreshHistoryHelpers = self.MultiPageBackgroundSub2ApiErrorRefreshHistory?.createSub2ApiErrorRefreshHistoryHelpers({
+  SUB2API_ERROR_REFRESH_HISTORY_STORAGE_KEY: 'sub2apiErrorRefreshHistory',
+  addLog,
+  buildLocalHelperEndpoint: (baseUrl, path) => buildHotmailLocalEndpoint(baseUrl, path),
+  chrome,
+  getErrorMessage,
+  getState,
+  normalizeAccountRunHistoryHelperBaseUrl,
+});
 const contributionOAuthManager = self.MultiPageBackgroundContributionOAuth?.createContributionOAuthManager({
   addLog,
   broadcastDataUpdate,
@@ -13830,6 +14212,101 @@ async function deleteAndBroadcastAccountRunHistoryRecords(recordIds = [], stateO
   const result = await accountRunHistoryHelpers.deleteAccountRunHistoryRecords(recordIds, stateOverride);
   await broadcastAccountRunHistoryUpdate();
   return result;
+}
+
+const sub2ApiErrorRefreshRunner = self.MultiPageBackgroundSub2ApiErrorRefreshRunner?.createSub2ApiErrorRefreshRunner({
+  addLog,
+  appendSub2ApiErrorRefreshHistoryRun: (...args) => appendAndBroadcastSub2ApiErrorRefreshHistoryRun(...args),
+  broadcastDataUpdate,
+  deleteSub2ApiAccount: async (origin, token, accountId, options = {}) => {
+    const api = getSub2SessionExportApi();
+    return api.deleteSub2ApiAccount(origin, token, accountId, options);
+  },
+  doesNodeUseCompletionSignal,
+  executeNode,
+  executeNodeViaCompletionSignal,
+  getErrorMessage,
+  getNextNodeIdForState: (nodeId, state = {}) => {
+    const nodeIds = Array.isArray(getNodeIdsForState(state)) ? getNodeIdsForState(state) : [];
+    const currentIndex = nodeIds.indexOf(String(nodeId || '').trim());
+    return String(nodeIds[currentIndex + 1] || '').trim();
+  },
+  getNodeIdsForState,
+  getState,
+  inspectPlusActivationFromSession: inspectPlusActivationFromSessionForRefresh,
+  listSub2ApiErrorOpenAiOauthAccounts: async (origin, token, options = {}) => {
+    const api = getSub2SessionExportApi();
+    return api.listSub2ApiErrorOpenAiOauthAccounts(origin, token, options);
+  },
+  loginSub2Api: async (state = {}, options = {}) => {
+    const api = getSub2SessionExportApi();
+    return api.loginSub2Api(state, options);
+  },
+  openSignupEntryTab,
+  patchHotmailAccount,
+  readCurrentChatGptSessionForExport,
+  setState,
+});
+
+async function broadcastSub2ApiErrorRefreshHistoryUpdate() {
+  if (!sub2ApiErrorRefreshHistoryHelpers?.getPersistedSub2ApiErrorRefreshHistory) {
+    return [];
+  }
+  const history = await sub2ApiErrorRefreshHistoryHelpers.getPersistedSub2ApiErrorRefreshHistory();
+  broadcastDataUpdate({ sub2apiErrorRefreshHistory: history });
+  return history;
+}
+
+async function ensureSub2ApiErrorRefreshHistoryPath(stateOverride = null) {
+  if (
+    !sub2ApiErrorRefreshHistoryHelpers?.getPersistedSub2ApiErrorRefreshHistory
+    || !sub2ApiErrorRefreshHistoryHelpers?.syncSub2ApiErrorRefreshHistorySnapshot
+  ) {
+    return '';
+  }
+  const state = stateOverride || await getState();
+  const existingPath = String(state?.sub2apiErrorRefreshHistoryPath || '').trim();
+  if (existingPath) {
+    return existingPath;
+  }
+  const history = await sub2ApiErrorRefreshHistoryHelpers.getPersistedSub2ApiErrorRefreshHistory();
+  if (!Array.isArray(history) || history.length === 0) {
+    return '';
+  }
+  try {
+    const filePath = await sub2ApiErrorRefreshHistoryHelpers.syncSub2ApiErrorRefreshHistorySnapshot(history, state);
+    const normalizedPath = String(filePath || '').trim();
+    if (!normalizedPath) {
+      return '';
+    }
+    await setState({
+      sub2apiErrorRefreshHistoryPath: normalizedPath,
+    });
+    broadcastDataUpdate({
+      sub2apiErrorRefreshHistoryPath: normalizedPath,
+    });
+    return normalizedPath;
+  } catch (error) {
+    await addLog(`SUB2API 老号刷新记录路径恢复失败：${getErrorMessage(error)}`, 'warn');
+    return '';
+  }
+}
+
+async function appendAndBroadcastSub2ApiErrorRefreshHistoryRun(record, stateOverride = null) {
+  if (!sub2ApiErrorRefreshHistoryHelpers?.appendSub2ApiErrorRefreshHistoryRun) {
+    return null;
+  }
+  const persisted = await sub2ApiErrorRefreshHistoryHelpers.appendSub2ApiErrorRefreshHistoryRun(record, stateOverride);
+  if (persisted?.filePath) {
+    await setState({
+      sub2apiErrorRefreshHistoryPath: persisted.filePath,
+    });
+    broadcastDataUpdate({
+      sub2apiErrorRefreshHistoryPath: persisted.filePath,
+    });
+  }
+  await broadcastSub2ApiErrorRefreshHistoryUpdate();
+  return persisted;
 }
 
 function resolveIpProxyCandidateCountForAutoSwitch(state = {}, mode = 'account', provider = DEFAULT_IP_PROXY_SERVICE) {
@@ -14241,6 +14718,11 @@ const autoRunController = self.MultiPageBackgroundAutoRunController?.createAutoR
   isHostedCheckoutGenericErrorFailure,
   isHostedCheckoutVerificationResendLimitFailure,
   isRestartCurrentAttemptError,
+  isAutoRunNextRoundPageFailure,
+  isSignupIdentityProviderMismatchFailure,
+  isSignupAccountDeactivatedFailure,
+  isSignupIdentityRateLimitFailure,
+  isStep5StaleSignupVerificationFailure,
   isStep4Route405RecoveryLimitFailure,
   isSignupUserAlreadyExistsFailure,
   isStopError,
@@ -15071,19 +15553,25 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       }
 
       if (nodeId === 'fetch-signup-code') {
-        if (isSignupUserAlreadyExistsFailure(err)) {
-          throw err;
-        }
-        if (isMail2925ThreadTerminatedError(err)) {
+        const isMail2925Terminated = isMail2925ThreadTerminatedError(err);
+        if (isMail2925Terminated) {
           await addLog(`节点 fetch-signup-code：2925 已切换账号并要求结束当前尝试：${getErrorMessage(err)}`, 'warn');
-          throw err;
         }
         step4RestartCount += 1;
         await stopIfStep4RestartLimitExceeded('fetch-signup-code', step4RestartCount, err, latestState);
         const isPhoneResendBanned = typeof phoneVerificationHelpers !== 'undefined'
           && typeof phoneVerificationHelpers?.isPhoneResendBannedNumberError === 'function'
           && phoneVerificationHelpers.isPhoneResendBannedNumberError(err);
-        if (isSignupPhonePasswordMismatchFailure(err) || isPhoneResendBanned) {
+        const fetchSignupCodeFailureHandling = getFetchSignupCodeFailureHandling(err, {
+          mail2925Terminated: isMail2925Terminated,
+          phoneResendBanned: isPhoneResendBanned,
+        });
+        if (fetchSignupCodeFailureHandling === 'throw') {
+          throw err;
+        }
+
+        step4RestartCount += 1;
+        if (fetchSignupCodeFailureHandling === 'restart_phone') {
           await restartSignupPhonePasswordMismatchAttemptFromNode('fetch-signup-code', step4RestartCount, err);
         } else {
           const preservedState = await getState();
@@ -15107,6 +15595,26 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
         setRestartNode('open-chatgpt');
         restartFromStep1WithCurrentEmail = true;
         break;
+      }
+
+      if (nodeId === 'plus-checkout-create'
+        && isCloudCheckoutAlreadyPaidFailure(err)
+        && shouldContinueAlreadyPaidWithPostLoginPhoneBind(latestState)) {
+        const alreadyPaidDetail = getErrorMessage(err);
+        await setState({
+          plusCheckoutSource: 'cloud-checkout-already-paid',
+          plusCheckoutAlreadyPaid: true,
+          plusCheckoutAlreadyPaidAt: Date.now(),
+          plusCheckoutAlreadyPaidDetail: alreadyPaidDetail,
+          plusAlreadyPaidNeedsPostLoginPhoneBind: true,
+        });
+        await setNodeStatus('plus-checkout-create', 'completed');
+        await addLog(
+          `节点 ${getNodeLabel(nodeId, latestState)}：检测到账号已开通 Plus，已跳过重复创建 Checkout，继续后续手机号绑定与平台回调。原因：${alreadyPaidDetail}`,
+          'warn'
+        );
+        nodeIndex += 1;
+        continue;
       }
 
       const restartDecision = await getPostStep6AutoRestartDecision(step, err);
@@ -15134,6 +15642,17 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       }
 
       if (restartDecision.blockedByAddPhone) {
+        const latestRecoveryState = await getState();
+        const recoveryNodeId = await recoverAlreadyPaidPostLoginPhoneBindAutoRunState({
+          state: latestRecoveryState,
+          visibleStep: step,
+          sourceNodeId: nodeId,
+          reason: restartDecision.errorMessage || getErrorMessage(err),
+        });
+        if (recoveryNodeId) {
+          nodeIndex = Math.max(0, getNodeIndex(await getState(), recoveryNodeId));
+          continue;
+        }
         const addPhoneUrl = restartDecision.authState?.url || 'https://auth.openai.com/add-phone';
         const authChainStartNodeId = String(getNodeIdByStepForState(restartDecision.restartStep, await getState()) || 'oauth-login').trim();
         await addLog(`节点 ${getNodeLabel(nodeId, latestState)}：检测到认证流程进入 add-phone（${addPhoneUrl}），停止自动回到节点 ${authChainStartNodeId} 重开。`, 'warn');
@@ -15942,6 +16461,12 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   setLuckmailPurchaseDisabledState,
   setLuckmailPurchasePreservedState,
   setLuckmailPurchaseUsedState,
+  startSub2ApiErrorRefresh: (...args) => sub2ApiErrorRefreshRunner?.startSub2ApiErrorRefresh?.(...args),
+  stopSub2ApiErrorRefresh: (...args) => sub2ApiErrorRefreshRunner?.stopSub2ApiErrorRefresh?.(...args),
+  getSub2ApiErrorRefreshHistory: async (...args) => {
+    await ensureSub2ApiErrorRefreshHistoryPath();
+    return sub2ApiErrorRefreshHistoryHelpers?.getPersistedSub2ApiErrorRefreshHistory?.(...args);
+  },
   setPersistentSettings,
   setState,
   setNodeStatus,

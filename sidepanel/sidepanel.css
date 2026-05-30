@@ -99,6 +99,178 @@ body {
   transition: background var(--transition), color var(--transition);
 }
 
+.sub2api-refresh-stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+}
+
+.sub2api-refresh-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-field);
+}
+
+.sub2api-refresh-stat span {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.sub2api-refresh-stat strong {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.sub2api-refresh-stat.is-wide {
+  grid-column: 1 / -1;
+}
+
+.sub2api-refresh-result {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-field);
+}
+
+.sub2api-refresh-result-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sub2api-refresh-result-line {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.sub2api-refresh-result-line span,
+.sub2api-refresh-result-title {
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.sub2api-refresh-result-line strong {
+  font-size: 13px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.sub2api-refresh-result-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sub2api-refresh-result-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-height: 22px;
+}
+
+.sub2api-refresh-entry-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.sub2api-refresh-entry-list.is-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sub2api-refresh-result-list.is-empty {
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
+.sub2api-refresh-result-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-size: 11px;
+  line-height: 1.4;
+  word-break: break-all;
+}
+
+.sub2api-refresh-entry-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-sm);
+  background: var(--bg-base);
+}
+
+.sub2api-refresh-entry-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.sub2api-refresh-entry-email {
+  font-size: 12px;
+  color: var(--text-primary);
+  word-break: break-all;
+}
+
+.sub2api-refresh-entry-status {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-field);
+  color: var(--text-secondary);
+}
+
+.sub2api-refresh-entry-status[data-status="pending"] {
+  color: var(--amber);
+  background: var(--amber-soft);
+}
+
+.sub2api-refresh-entry-status[data-status="revived_success"] {
+  color: var(--green);
+  background: var(--green-soft);
+}
+
+.sub2api-refresh-entry-status[data-status="not_found_locally"] {
+  color: var(--blue);
+  background: var(--blue-soft);
+}
+
+.sub2api-refresh-entry-status[data-status="dead_non_plus"],
+.sub2api-refresh-entry-status[data-status="dead_reauth_failed"] {
+  color: var(--red);
+  background: var(--red-soft);
+}
+
+.sub2api-refresh-entry-reason {
+  font-size: 11px;
+  color: var(--text-secondary);
+  word-break: break-word;
+}
+
 /* ============================================================
    Header
    ============================================================ */

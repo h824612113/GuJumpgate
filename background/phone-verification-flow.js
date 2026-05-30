@@ -684,7 +684,7 @@
       if (!text) {
         return false;
       }
-      return /phone_max_usage_exceeded|phone_number_in_use|already\s+(?:linked|associated)\s+to\s+the\s+maximum\s+number\s+of\s+accounts|associated\s+with\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*(?:已|被).*(?:使用|占用|绑定|注册|关联)|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*关联.*(?:最多|最大|上限).*(?:账户|账号)/i.test(text);
+      return /identity_provider_mismatch|different\s+identity\s+verification\s+method|different\s+authentication\s+method|registered\s+with\s+a\s+different\s+identity\s+verification\s+method|注册时不同的身份验证方式|使用注册时使用的身份验证方式重试|phone_max_usage_exceeded|phone_number_in_use|already\s+(?:linked|associated)\s+to\s+the\s+maximum\s+number\s+of\s+accounts|associated\s+with\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*(?:已|被).*(?:使用|占用|绑定|注册|关联)|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*关联.*(?:最多|最大|上限).*(?:账户|账号)/i.test(text);
     }
 
     function isPhoneNumberInvalidError(value) {
@@ -703,6 +703,14 @@
       return /无法向此电话号码发送验证码|无法向.*(?:电话号码|手机号|号码).*发送(?:验证码|短信)|(?:不能|无法).*发送.*(?:验证码|短信).*(?:电话号码|手机号|号码)|(?:虚拟号码|非虚拟(?:电话)?号码|voip|virtual\s+(?:phone\s+)?number)|(?:cannot|can't|could\s*not|couldn't|unable\s+to)\s+(?:send|deliver).{0,80}(?:verification\s+code|code|sms|text(?:\s+message)?).{0,80}(?:phone|number)|(?:verification\s+code|sms|text(?:\s+message)?).{0,80}(?:cannot|can't|could\s*not|couldn't|unable\s+to).{0,80}(?:send|deliver)/i.test(text);
     }
 
+    function isPhoneRequestTooFrequentError(value) {
+      const text = String(value || '').trim();
+      if (!text) {
+        return false;
+      }
+      return /requested\s+phone\s+verification\s+too\s+many\s+times|too\s+many\s+(?:phone\s+)?verification\s+requests|too\s+many\s+requests[^.。!?]*phone|you(?:'ve|\s+have)?\s+requested[^.。!?]*too\s+many\s+times|请求(?:手机|电话)?验证(?:码)?的?次数过多|请求次数过多|请稍后再试/i.test(text);
+    }
+
     function classifyAddPhoneRejectedReason(value) {
       const text = String(value || '').trim();
       if (!text) {
@@ -717,6 +725,9 @@
       if (isPhoneNumberInvalidError(text)) {
         return 'phone_number_invalid';
       }
+      if (isPhoneRequestTooFrequentError(text)) {
+        return 'phone_request_too_frequent';
+      }
       return '';
     }
 
@@ -725,6 +736,7 @@
       return normalizedCode === 'phone_number_used'
         || normalizedCode === 'phone_delivery_refused'
         || normalizedCode === 'phone_number_invalid'
+        || normalizedCode === 'phone_request_too_frequent'
         || Boolean(classifyAddPhoneRejectedReason(failureReason));
     }
 
@@ -1381,6 +1393,7 @@
         returned_to_add_phone_loop: '反复返回添加手机号页',
         phone_number_used: '手机号已被使用',
         phone_number_invalid: '手机号无效',
+        phone_request_too_frequent: '手机号请求次数过多',
         phone_delivery_refused: 'OpenAI 拒绝向该手机号发送验证码',
         sms_not_received: '未收到短信',
         sms_timeout: '短信超时',
@@ -2531,19 +2544,9 @@
       return /this\s+page\s+isn['’]?t\s+working|currently\s+unable\s+to\s+handle\s+this\s+request|http\s+error\s+500|500\s+internal\s+server\s+error/i.test(message);
     }
 
-    function buildPhoneResendServerError(error) {
-      const message = String(error?.message || error || '').trim();
-      if (message.startsWith(PHONE_RESEND_SERVER_ERROR_PREFIX)) {
-        return new Error(message);
-      }
-      return new Error(`${PHONE_RESEND_SERVER_ERROR_PREFIX}${message || 'OpenAI contact-verification 页面在重发短信后返回 HTTP ERROR 500。'}`);
-    }
-
-    function getPhoneResendServerErrorFromSnapshot(snapshot = {}) {
+    function isOpenAiAuthServerErrorPageSnapshot(snapshot = {}) {
       const rawUrl = String(snapshot?.url || snapshot?.href || '').trim();
-      if (!/\/contact-verification(?:[/?#]|$)/i.test(rawUrl)) {
-        return '';
-      }
+      const titleText = String(snapshot?.title || '').replace(/\s+/g, ' ').trim();
       const bodyText = [
         snapshot?.text,
         snapshot?.bodyText,
@@ -2552,22 +2555,41 @@
         .join(' ')
         .replace(/\s+/g, ' ')
         .trim();
-      const titleText = String(snapshot?.title || '').replace(/\s+/g, ' ').trim();
-      if (!bodyText) {
-        return isPhoneResendServerError(titleText) ? (titleText || 'OpenAI contact-verification 页面在重发短信后返回 HTTP ERROR 500。') : '';
+      const combined = [titleText, bodyText]
+        .filter(Boolean)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (!combined || !isPhoneResendServerError(combined)) {
+        return false;
+      }
+      return /https:\/\/auth\.openai\.com|https:\/\/auth0\.openai\.com|https:\/\/accounts\.openai\.com/i.test(rawUrl)
+        || /\/(?:contact-verification|phone-verification|add-phone)(?:[/?#]|$)/i.test(rawUrl)
+        || /auth\.openai\.com|无法正常运作|unable to handle this request|http error 500/i.test(combined);
+    }
+
+    function buildPhoneResendServerError(error) {
+      const message = String(error?.message || error || '').trim();
+      if (message.startsWith(PHONE_RESEND_SERVER_ERROR_PREFIX)) {
+        return new Error(message);
+      }
+      return new Error(`${PHONE_RESEND_SERVER_ERROR_PREFIX}${message || 'OpenAI 认证页返回 HTTP ERROR 500。'}`);
+    }
+
+    function getPhoneResendServerErrorFromSnapshot(snapshot = {}) {
+      if (!isOpenAiAuthServerErrorPageSnapshot(snapshot)) {
+        return '';
       }
       const combined = [
-        bodyText,
-        titleText,
+        String(snapshot?.title || ''),
+        String(snapshot?.text || ''),
+        String(snapshot?.bodyText || ''),
       ]
         .filter(Boolean)
         .join(' ')
         .replace(/\s+/g, ' ')
         .trim();
-      if (!isPhoneResendServerError(combined)) {
-        return '';
-      }
-      return combined || 'OpenAI contact-verification 页面在重发短信后返回 HTTP ERROR 500。';
+      return combined || 'OpenAI 认证页返回 HTTP ERROR 500。';
     }
 
     async function readPhoneResendServerErrorFromAuthTab(tabId) {
@@ -7682,7 +7704,7 @@
       const visibleStep = normalizeLogStep(options?.visibleStep || options?.step) || 8;
       return withPhoneVerificationLogContext({ step: visibleStep, stepKey: 'fetch-login-code' }, async () => {
         let state = options?.state || await getState();
-        const baseActivation = normalizeActivation(
+        let baseActivation = normalizeActivation(
           options?.activation
           || state?.signupPhoneCompletedActivation
           || state?.signupPhoneActivation
@@ -7691,25 +7713,124 @@
           throw new Error(`步骤 ${visibleStep}：未找到当前登录手机号激活记录，请重新执行步骤 ${visibleStep >= 11 ? 10 : 7}。`);
         }
 
-        let activation = await prepareLoginPhoneActivation(state, {
-          activation: baseActivation,
-          visibleStep,
-        });
-        let shouldCancelActivation = true;
+        let activation = null;
+        let shouldCancelActivation = false;
+        let preferredActivationExhausted = false;
+        const acquireReplacementActivation = async () => {
+          state = await getState();
+          const replacementActivation = normalizeActivation(await acquirePhoneActivation(state, {
+            skipPreferredActivation: preferredActivationExhausted,
+          }));
+          if (!replacementActivation) {
+            throw new Error(`步骤 ${visibleStep}：更换手机号后未获取到有效接码订单。`);
+          }
+          await setPhoneRuntimeState({
+            signupPhoneActivation: replacementActivation,
+            signupPhoneCompletedActivation: baseActivation,
+            signupPhoneNumber: replacementActivation.phoneNumber,
+            signupPhoneVerificationRequestedAt: null,
+            signupPhoneVerificationPurpose: 'login',
+            [PHONE_VERIFICATION_CODE_STATE_KEY]: '',
+            accountIdentifierType: 'phone',
+            accountIdentifier: replacementActivation.phoneNumber,
+          });
+          await addLog(`步骤 ${visibleStep}：已切换为新号码 ${replacementActivation.phoneNumber} 继续手机号恢复。`, 'warn', {
+            step: visibleStep,
+            stepKey: 'fetch-login-code',
+          });
+          activation = replacementActivation;
+          shouldCancelActivation = true;
+          return replacementActivation;
+        };
+        const prepareCurrentActivation = async (activationCandidate, preserveCompletedActivation = true) => {
+          const prepared = normalizeActivation(await prepareLoginPhoneActivation(state, {
+            activation: activationCandidate,
+            visibleStep,
+          }));
+          if (!prepared) {
+            throw new Error(`步骤 ${visibleStep}：无法准备当前登录手机号接码订单。`);
+          }
+          activation = prepared;
+          shouldCancelActivation = true;
+          if (!preserveCompletedActivation) {
+            baseActivation = prepared;
+          }
+          return prepared;
+        };
+
+        await prepareCurrentActivation(baseActivation);
 
         try {
-          for (let attempt = 1; attempt <= DEFAULT_PHONE_SUBMIT_ATTEMPTS; attempt += 1) {
-            throwIfStopped();
-            state = await getState();
-            const code = await waitForLoginPhoneCode(state, activation, {
-              visibleStep,
-              onTimeoutWindow: async () => {
+          while (true) {
+            for (let attempt = 1; attempt <= DEFAULT_PHONE_SUBMIT_ATTEMPTS; attempt += 1) {
+              throwIfStopped();
+              state = await getState();
+              const code = await waitForLoginPhoneCode(state, activation, {
+                visibleStep,
+                onTimeoutWindow: async () => {
+                  try {
+                    await resendLoginPhoneVerificationCode(tabId, { visibleStep });
+                    await addLog(`步骤 ${visibleStep}：已点击登录手机验证码页面的“重新发送”。`, 'info', {
+                      step: visibleStep,
+                      stepKey: 'fetch-login-code',
+                    });
+                  } catch (resendError) {
+                    if (isStopRequestedError(resendError)) {
+                      throw resendError;
+                    }
+                    if (isPhoneResendServerError(resendError)) {
+                      throw buildPhoneResendServerError(resendError);
+                    }
+                    await addLog(`步骤 ${visibleStep}：登录手机验证码页面重发失败，将继续轮询短信。${resendError.message}`, 'warn', {
+                      step: visibleStep,
+                      stepKey: 'fetch-login-code',
+                    });
+                  }
+                },
+              });
+
+              await setPhoneRuntimeState({
+                [PHONE_VERIFICATION_CODE_STATE_KEY]: String(code || '').trim(),
+                signupPhoneVerificationRequestedAt: Date.now(),
+                signupPhoneVerificationPurpose: 'login',
+              });
+              await addLog(`步骤 ${visibleStep}：已获取登录手机验证码 ${code}。`, 'info', {
+                step: visibleStep,
+                stepKey: 'fetch-login-code',
+              });
+
+              const submitResult = await submitLoginPhoneVerificationCode(tabId, code, {
+                visibleStep,
+              });
+
+              if (submitResult.invalidCode) {
+                const invalidErrorText = String(submitResult.errorText || submitResult.url || '未知错误').trim();
+                if (isPhoneNumberUsedError(invalidErrorText)) {
+                  await addLog(
+                    `步骤 ${visibleStep}：登录手机号 ${activation?.phoneNumber || ''} 被提示已占用，立即更换新号码继续恢复。${invalidErrorText}`,
+                    'warn',
+                    { step: visibleStep, stepKey: 'fetch-login-code' }
+                  );
+                  preferredActivationExhausted = true;
+                  await discardPhoneActivationFromReuse(
+                    `目标站拒绝该号码（${invalidErrorText}）。`,
+                    activation,
+                    await getState()
+                  );
+                  if (shouldCancelActivation && activation) {
+                    await banPhoneActivation(await getState(), activation);
+                    shouldCancelActivation = false;
+                  }
+                  await acquireReplacementActivation();
+                  break;
+                }
+                if (attempt >= DEFAULT_PHONE_SUBMIT_ATTEMPTS) {
+                  throw new Error(`步骤 ${visibleStep}：登录手机验证码连续 ${DEFAULT_PHONE_SUBMIT_ATTEMPTS} 次被拒绝：${invalidErrorText}`);
+                }
+
+                await requestAdditionalPhoneSms(state, activation);
                 try {
                   await resendLoginPhoneVerificationCode(tabId, { visibleStep });
-                  await addLog(`步骤 ${visibleStep}：已点击登录手机验证码页面的“重新发送”。`, 'info', {
-                    step: visibleStep,
-                    stepKey: 'fetch-login-code',
-                  });
                 } catch (resendError) {
                   if (isStopRequestedError(resendError)) {
                     throw resendError;
@@ -7717,32 +7838,17 @@
                   if (isPhoneResendServerError(resendError)) {
                     throw buildPhoneResendServerError(resendError);
                   }
-                  await addLog(`步骤 ${visibleStep}：登录手机验证码页面重发失败，将继续轮询短信。${resendError.message}`, 'warn', {
+                  await addLog(`步骤 ${visibleStep}：登录手机验证码被拒后点击重发失败。${resendError.message}`, 'warn', {
                     step: visibleStep,
                     stepKey: 'fetch-login-code',
                   });
                 }
-              },
-            });
-
-            await setPhoneRuntimeState({
-              [PHONE_VERIFICATION_CODE_STATE_KEY]: String(code || '').trim(),
-              signupPhoneVerificationRequestedAt: Date.now(),
-              signupPhoneVerificationPurpose: 'login',
-            });
-            await addLog(`步骤 ${visibleStep}：已获取登录手机验证码 ${code}。`, 'info', {
-              step: visibleStep,
-              stepKey: 'fetch-login-code',
-            });
-
-            const submitResult = await submitLoginPhoneVerificationCode(tabId, code, {
-              visibleStep,
-            });
-
-            if (submitResult.invalidCode) {
-              const invalidErrorText = String(submitResult.errorText || submitResult.url || '未知错误').trim();
-              if (attempt >= DEFAULT_PHONE_SUBMIT_ATTEMPTS) {
-                throw new Error(`步骤 ${visibleStep}：登录手机验证码连续 ${DEFAULT_PHONE_SUBMIT_ATTEMPTS} 次被拒绝：${invalidErrorText}`);
+                await addLog(
+                  `步骤 ${visibleStep}：登录手机验证码被拒绝，已请求新短信（${attempt + 1}/${DEFAULT_PHONE_SUBMIT_ATTEMPTS}）。`,
+                  'warn',
+                  { step: visibleStep, stepKey: 'fetch-login-code' }
+                );
+                continue;
               }
 
               const requestAdditionalResult = await requestAdditionalPhoneSms(state, activation);
@@ -7779,17 +7885,7 @@
               );
               continue;
             }
-
-            await finalizeLoginPhoneActivationAfterSuccess(state, activation, { visibleStep });
-            shouldCancelActivation = false;
-            await addLog(`步骤 ${visibleStep}：登录手机验证码已通过，继续进入后续授权流程。`, 'ok', {
-              step: visibleStep,
-              stepKey: 'fetch-login-code',
-            });
-            return submitResult || {};
           }
-
-          throw new Error(`步骤 ${visibleStep}：登录手机验证码未能成功提交。`);
         } catch (error) {
           const preserveActivationOnStop = shouldPreservePhoneActivationOnStop(state, error);
           if (preserveActivationOnStop) {

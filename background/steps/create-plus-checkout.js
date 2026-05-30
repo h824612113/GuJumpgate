@@ -17,6 +17,7 @@
     [PLUS_CHECKOUT_MODE_JP_PP]: '日区PP Plus Checkout',
   });
   const PLUS_ACCOUNT_ACCESS_STRATEGY_SMS_OAUTH = 'sms_oauth';
+  const PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH = 'phone_bind_oauth';
   const DEFAULT_GPC_HELPER_API_URL = 'https://your-gpc-helper-domain.example';
   const BUILTIN_PLUS_CHECKOUT_CLOUD_CONVERSION_API_URL = 'https://gujumpgate.zg.fyi/api/checkout';
   const BUILTIN_PLUS_CHECKOUT_CLOUD_CONVERSION_API_KEY = '2KwVxE6f0ABH002JLkoQJ9ReRf4_d01y';
@@ -267,6 +268,14 @@
     function isSmsOauthCheckoutState(state = {}) {
       return normalizePlusPaymentMethod(state?.plusPaymentMethod) === PLUS_PAYMENT_METHOD_PAYPAL
         && String(state?.plusAccountAccessStrategy || '').trim().toLowerCase() === PLUS_ACCOUNT_ACCESS_STRATEGY_SMS_OAUTH;
+    }
+
+    function shouldContinueAlreadyPaidWithPostLoginPhoneBind(state = {}) {
+      return String(state?.panelMode || '').trim().toLowerCase() === 'sub2api'
+        && Boolean(state?.plusModeEnabled)
+        && Boolean(state?.phoneVerificationEnabled)
+        && normalizePlusPaymentMethod(state?.plusPaymentMethod) === PLUS_PAYMENT_METHOD_PAYPAL
+        && String(state?.plusAccountAccessStrategy || '').trim().toLowerCase() === PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH;
     }
 
     function getCheckoutCreateDisplayStep(state = {}) {
@@ -652,7 +661,9 @@
       const normalized = stripHostedCheckoutNonFreeTrialPrefix(message);
       const fallback = '步骤 6：检测到当前账号没有免费试用资格。';
       if (!options?.willRetry) {
-        return normalized || `${fallback}已自动停止整个流程。`;
+        return (normalized || fallback)
+          .replace(/，?已自动停止整个流程。?/g, '')
+          .replace(/当前账号没有免费试用资格。?$/g, '当前账号没有免费试用资格。');
       }
       return (normalized || fallback)
         .replace(/，?已自动停止整个流程。?/g, '')
@@ -987,6 +998,7 @@
         plusCheckoutAlreadyPaid: true,
         plusCheckoutAlreadyPaidAt: Date.now(),
         plusCheckoutAlreadyPaidDetail: detail,
+        plusAlreadyPaidNeedsPostLoginPhoneBind: shouldContinueAlreadyPaidWithPostLoginPhoneBind(state),
       });
       await addLog(
         skippedNodes.length

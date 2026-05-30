@@ -140,9 +140,34 @@
       return /当前邮箱已存在，需要重新开始新一轮|SIGNUP_PHONE_PASSWORD_MISMATCH::/i.test(message);
     }
 
+    function isSignupIdentityProviderMismatchFailure(error) {
+      const message = getErrorMessage(error);
+      return /SIGNUP_IDENTITY_PROVIDER_MISMATCH::|identity_provider_mismatch|different\s+identity\s+verification\s+method|different\s+authentication\s+method|注册时不同的身份验证方式|使用注册时使用的身份验证方式重试/i.test(message);
+    }
+
+    function isSignupAccountDeactivatedFailure(error) {
+      const message = getErrorMessage(error);
+      return /SIGNUP_ACCOUNT_DEACTIVATED::|account_deactivated|账户(?:已被)?(?:删除|停用)|账号(?:已被)?(?:删除|停用)|account\s+has\s+been\s+(?:deleted|deactivated)|you\s+do\s+not\s+have\s+an?\s+account\s+because\s+it\s+has\s+been\s+(?:deleted|deactivated)/i.test(message);
+    }
+
     function isSignupUserAlreadyExistsFailure(error) {
       const message = getErrorMessage(error);
       return /SIGNUP_USER_ALREADY_EXISTS::|user_already_exists/i.test(message);
+    }
+
+    function isSignupIdentityRateLimitFailure(error) {
+      const message = getErrorMessage(error);
+      return /SIGNUP_IDENTITY_RATE_LIMIT::|rate_limit_exceeded|请求过多|too\s+many\s+requests/i.test(message);
+    }
+
+    function isStep5StaleSignupVerificationFailure(error) {
+      const message = getErrorMessage(error);
+      return /STEP5_STALE_SIGNUP_VERIFICATION::|步骤\s*5：资料页启动时认证页仍停留在邮箱验证码阶段/i.test(message);
+    }
+
+    function isAutoRunNextRoundPageFailure(error) {
+      const message = getErrorMessage(error);
+      return /内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|did not respond in \d+s|Receiving end does not exist|message channel closed|A listener indicated an asynchronous response|port closed before a response was received|等待注册身份提交后的页面跳转超时|注册身份提交后未能识别当前页面|注册身份提交后进入认证错误页/i.test(message);
     }
 
     function isStep9RecoverableAuthError(error) {
@@ -240,7 +265,12 @@
       hasSavedProgress,
       isLegacyStep9RecoverableAuthError,
       isRestartCurrentAttemptError,
+      isSignupIdentityProviderMismatchFailure,
+      isSignupAccountDeactivatedFailure,
+      isSignupIdentityRateLimitFailure,
       isSignupUserAlreadyExistsFailure,
+      isAutoRunNextRoundPageFailure,
+      isStep5StaleSignupVerificationFailure,
       isStep9RecoverableAuthError,
       isStepDoneStatus,
       isVerificationMailPollingError,

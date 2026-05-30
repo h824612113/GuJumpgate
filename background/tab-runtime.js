@@ -92,6 +92,27 @@
       return new Error(`自动任务窗口已不可用，请在目标 Chrome 窗口重新打开侧边栏并启动任务。${suffix}`);
     }
 
+    function isChromeErrorPageUrl(url = '') {
+      const normalized = String(url || '').trim().toLowerCase();
+      return normalized.startsWith('chrome-error://');
+    }
+
+    function isChromeErrorPageScriptError(error) {
+      const message = String(error?.message || error || '').trim();
+      return /Frame with ID \d+ is showing error page|Cannot access contents of the page/i.test(message);
+    }
+
+    async function executeScriptAllowChromeError(details = {}) {
+      try {
+        return await chrome.scripting.executeScript(details);
+      } catch (error) {
+        if (!isChromeErrorPageScriptError(error)) {
+          throw error;
+        }
+        return null;
+      }
+    }
+
     async function getAutomationWindowId(options = {}) {
       const directWindowId = normalizeAutomationWindowId(
         options.automationWindowId ?? options.windowId ?? null
@@ -753,8 +774,9 @@
         const tabId = await getTabId(source);
         await closeConflictingTabsForSource(source, url, { excludeTabIds: [tabId] });
         const currentTab = await chrome.tabs.get(tabId);
+        const currentTabOnErrorPage = isChromeErrorPageUrl(currentTab?.url);
         const sameUrl = currentTab.url === url;
-        const shouldReloadOnReuse = sameUrl && options.reloadIfSameUrl;
+        const shouldReloadOnReuse = currentTabOnErrorPage || (sameUrl && options.reloadIfSameUrl);
 
         let registry = await getTabRegistry();
         const sourceEntry = getSourceMapValue(registry, source);
@@ -781,7 +803,7 @@
             }
             await setState({ tabRegistry: registry });
             if (options.injectSource) {
-              await chrome.scripting.executeScript({
+              await executeScriptAllowChromeError({
                 target: { tabId },
                 func: (injectedSource) => {
                   window.__MULTIPAGE_SOURCE = injectedSource;
@@ -789,7 +811,7 @@
                 args: [options.injectSource],
               });
             }
-            await chrome.scripting.executeScript({
+            await executeScriptAllowChromeError({
               target: { tabId },
               files: options.inject,
             });
@@ -813,7 +835,7 @@
 
         if (options.inject) {
           if (options.injectSource) {
-            await chrome.scripting.executeScript({
+            await executeScriptAllowChromeError({
               target: { tabId },
               func: (injectedSource) => {
                 window.__MULTIPAGE_SOURCE = injectedSource;
@@ -821,7 +843,7 @@
               args: [options.injectSource],
             });
           }
-          await chrome.scripting.executeScript({
+          await executeScriptAllowChromeError({
             target: { tabId },
             files: options.inject,
           });

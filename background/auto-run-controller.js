@@ -21,6 +21,7 @@
       getAutoRunStatusPayload,
       getErrorMessage,
       getFirstUnfinishedNodeId,
+      getRegistrationAccountUnavailableMarking,
       getPendingAutoRunTimerPlan,
       getRunningNodeIds,
       getState,
@@ -32,7 +33,12 @@
       isHostedCheckoutVerificationResendLimitFailure,
       isPhoneSmsPlatformRateLimitFailure,
       isPlusCheckoutNonFreeTrialFailure,
+      isAutoRunNextRoundPageFailure,
+      isSignupIdentityProviderMismatchFailure,
+      isSignupAccountDeactivatedFailure,
       isRestartCurrentAttemptError,
+      isSignupIdentityRateLimitFailure,
+      isStep5StaleSignupVerificationFailure,
       isStep4Route405RecoveryLimitFailure,
       isSignupUserAlreadyExistsFailure,
       isStopError,
@@ -42,6 +48,7 @@
       resetState,
       runAutoSequenceFromNode,
       runtime,
+      markCurrentRegistrationAccountUnavailable,
       setState,
       sleepWithStop,
       throwIfAutoRunSessionStopped,
@@ -224,6 +231,14 @@
         .join('；');
     }
 
+    function isResumeFailureRequiringFreshRound(reason = '') {
+      const message = String(reason || '').trim();
+      if (!message) {
+        return false;
+      }
+      return /STEP5_STALE_SIGNUP_VERIFICATION::|SIGNUP_IDENTITY_RATE_LIMIT::|SIGNUP_IDENTITY_PROVIDER_MISMATCH::|SIGNUP_ACCOUNT_DEACTIVATED::|SIGNUP_USER_ALREADY_EXISTS::|identity_provider_mismatch|account_deactivated|user_already_exists|email_in_use|already\s+(?:paid|subscribed)|没有免费试用资格|今日应付金额不是\s*0|等待注册身份提交后的页面跳转超时|注册身份提交后未能识别当前页面|注册身份提交后进入认证错误页|内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|did not respond in \d+s|Receiving end does not exist|message channel closed/i.test(message);
+    }
+
     function isPhoneNumberSupplyExhaustedFailure(errorLike) {
       const message = String(
         typeof errorLike === 'string'
@@ -248,6 +263,72 @@
       return String(state?.mailProvider || '').trim().toLowerCase() === 'custom'
         && Array.isArray(state?.customMailProviderPool)
         && state.customMailProviderPool.length > 0;
+    }
+
+    function resolveRegistrationAccountUnavailableMarking(error, flags = {}) {
+      if (typeof getRegistrationAccountUnavailableMarking === 'function') {
+        const derived = getRegistrationAccountUnavailableMarking(error);
+        if (derived) {
+          return derived;
+        }
+      }
+
+      if (flags.blockedBySignupIdentityProviderMismatch) {
+        return {
+          logPrefix: '自动运行检测到当前注册邮箱命中身份验证方式冲突',
+          reason: 'identity_provider_mismatch',
+          reasonLabel: '身份验证方式冲突',
+        };
+      }
+
+      if (flags.blockedBySignupAccountDeactivated) {
+        return {
+          logPrefix: '自动运行检测到当前注册邮箱对应账号已删除或停用',
+          reason: 'account_deactivated',
+          reasonLabel: '账号已删除或停用',
+        };
+      }
+
+      if (flags.blockedBySignupIdentityRateLimit) {
+        return {
+          logPrefix: '自动运行检测到当前注册邮箱命中注册身份限流',
+          reason: 'signup_identity_rate_limit',
+          reasonLabel: '注册身份限流',
+        };
+      }
+
+      if (flags.blockedByPlusNonFreeTrial) {
+        return {
+          logPrefix: '自动运行检测到当前注册邮箱没有免费试用资格',
+          reason: 'plus_non_free_trial',
+          reasonLabel: '没有免费试用资格',
+        };
+      }
+
+      if (flags.blockedByCloudCheckoutAlreadyPaid) {
+        return {
+          logPrefix: '自动运行检测到当前注册邮箱已是 Plus 账号',
+          reason: 'plus_already_paid',
+          reasonLabel: '账号已是 Plus',
+        };
+      }
+
+      return null;
+    }
+
+    async function markRegistrationAccountUnavailableForAutoRun(error, flags = {}) {
+      if (typeof markCurrentRegistrationAccountUnavailable !== 'function') {
+        return false;
+      }
+      const marking = resolveRegistrationAccountUnavailableMarking(error, flags);
+      if (!marking) {
+        return false;
+      }
+      await markCurrentRegistrationAccountUnavailable(await getState(), {
+        level: 'warn',
+        ...marking,
+      });
+      return true;
     }
 
     function isPhoneNumberSupplyExhaustedFailure(error) {
@@ -517,10 +598,21 @@
       for (let targetRun = resumeCurrentRun; targetRun <= totalRuns; targetRun += 1) {
         const roundSummary = roundSummaries[targetRun - 1];
         let roundRecordAppended = false;
-        const resumingCurrentRound = continueCurrentOnFirstAttempt && targetRun === resumeCurrentRun;
+        const resumeRequiresFreshRound = continueCurrentOnFirstAttempt
+          && targetRun === resumeCurrentRun
+          && isResumeFailureRequiringFreshRound(roundSummary.finalFailureReason);
+        const resumingCurrentRound = continueCurrentOnFirstAttempt
+          && targetRun === resumeCurrentRun
+          && !resumeRequiresFreshRound;
         let attemptRun = resumingCurrentRound ? resumeAttemptRun : 1;
         let reuseExistingProgress = resumingCurrentRound;
         const currentRoundState = await getState();
+        if (resumeRequiresFreshRound) {
+          await addLog(
+            `检测到第 ${targetRun}/${totalRuns} 轮上一轮失败已判定当前邮箱为旧邮箱/已消耗邮箱，本次继续运行将改为从首个节点重新开始并分配新邮箱。`,
+            'warn'
+          );
+        }
         const keepSameEmailUntilAddPhone = autoRunSkipFailures && shouldKeepCustomMailProviderPoolEmail(currentRoundState);
         const maxKeepSameEmailAttemptsForRound = AUTO_RUN_MAX_KEEP_SAME_EMAIL_RETRIES_PER_ROUND + 1;
         const maxAttemptsForRound = autoRunSkipFailures || autoRunRetryNonFreeTrial || autoRunRetryPaypalCallback
@@ -724,8 +816,27 @@
             const blockedBySignupUserAlreadyExists = typeof isSignupUserAlreadyExistsFailure === 'function'
               && !keepSameEmailUntilAddPhone
               && isSignupUserAlreadyExistsFailure(err);
+            const blockedBySignupIdentityRateLimit = typeof isSignupIdentityRateLimitFailure === 'function'
+              && isSignupIdentityRateLimitFailure(err);
+            const blockedBySignupIdentityProviderMismatch = typeof isSignupIdentityProviderMismatchFailure === 'function'
+              && isSignupIdentityProviderMismatchFailure(err);
+            const blockedBySignupAccountDeactivated = typeof isSignupAccountDeactivatedFailure === 'function'
+              && isSignupAccountDeactivatedFailure(err);
+            const blockedByStep5StaleSignupVerification = typeof isStep5StaleSignupVerificationFailure === 'function'
+              && isStep5StaleSignupVerificationFailure(err);
             const blockedByStep4Route405 = typeof isStep4Route405RecoveryLimitFailure === 'function'
               && isStep4Route405RecoveryLimitFailure(err);
+            const blockedByAutoRunNextRoundPageFailure = typeof isAutoRunNextRoundPageFailure === 'function'
+              && isAutoRunNextRoundPageFailure(err);
+            const registrationAccountUnavailableFlags = {
+              blockedByCloudCheckoutAlreadyPaid,
+              blockedByPlusNonFreeTrial,
+              blockedBySignupAccountDeactivated,
+              blockedBySignupIdentityProviderMismatch,
+              blockedBySignupIdentityRateLimit,
+              blockedBySignupUserAlreadyExists,
+              blockedByStep5StaleSignupVerification,
+            };
             const maxPlusNonFreeTrialAttempts = AUTO_RUN_MAX_RETRIES_PER_ROUND + 1;
             const retryablePlusNonFreeTrial = blockedByPlusNonFreeTrial
               && autoRunRetryNonFreeTrial
@@ -733,8 +844,7 @@
             const retryableHostedCheckoutGenericError = blockedByHostedCheckoutGenericError
               && autoRunRetryPaypalCallback
               && attemptRun < maxPlusNonFreeTrialAttempts;
-            const retryableHostedCheckoutCardFallback = blockedByHostedCheckoutCardFallback
-              && attemptRun < maxPlusNonFreeTrialAttempts;
+            const retryableHostedCheckoutCardFallback = false;
             const canRetry = !blockedByAddPhone
               && !blockedByPhoneNoSupply
               && !blockedByPlusNonFreeTrial
@@ -743,7 +853,12 @@
               && !blockedByHostedCheckoutCardFallback
               && !blockedByHostedCheckoutVerificationResendLimit
               && !blockedByCloudCheckoutAlreadyPaid
+              && !blockedBySignupAccountDeactivated
+              && !blockedBySignupIdentityRateLimit
+              && !blockedBySignupIdentityProviderMismatch
               && !blockedBySignupUserAlreadyExists
+              && !blockedByStep5StaleSignupVerification
+              && !blockedByAutoRunNextRoundPageFailure
               && autoRunSkipFailures
               && attemptRun < maxAttemptsForRound;
             const reachedKeepSameEmailRetryLimit = keepSameEmailUntilAddPhone
@@ -765,6 +880,7 @@
             });
 
             if (retryablePlusNonFreeTrial) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
               const retryIndex = attemptRun;
               await addLog(`第 ${targetRun}/${totalRuns} 轮第 ${attemptRun} 次尝试没有 Plus 免费试用资格：${reason}`, 'warn');
               cancelPendingCommands('当前尝试因无免费试用资格已放弃。');
@@ -1017,6 +1133,7 @@
             }
 
             if (blockedByPlusNonFreeTrial) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
               roundSummary.status = 'failed';
               roundSummary.finalFailureReason = reason;
               await setState({
@@ -1082,15 +1199,25 @@
               cancelPendingCommands(
                 autoRunRetryPaypalCallback
                   ? '当前轮因 PayPal Checkout genericError 已达到自动重试上限。'
-                  : '当前轮因 PayPal Checkout genericError 已终止，等待用户选择检查或重试。'
+                  : '当前轮因 PayPal Checkout genericError 已终止。'
               );
               await broadcastStopToContentScripts();
               await addLog(
                 autoRunRetryPaypalCallback
                   ? `第 ${targetRun}/${totalRuns} 轮检测到 PayPal Checkout genericError，已达到 PAYPAL回调自动重试上限，当前自动运行将停止。`
-                  : `第 ${targetRun}/${totalRuns} 轮检测到 PayPal Checkout genericError，当前自动运行已停止，请在弹窗中选择“检查”或“重试”。`,
+                  : `第 ${targetRun}/${totalRuns} 轮检测到 PayPal Checkout genericError，本轮将直接失败并跳过剩余重试。`,
                 'warn'
               );
+              if (!autoRunRetryPaypalCallback) {
+                await addLog(
+                  targetRun < totalRuns
+                    ? `第 ${targetRun}/${totalRuns} 轮因 PayPal Checkout genericError 提前结束，自动流程将继续下一轮。`
+                    : `第 ${targetRun}/${totalRuns} 轮因 PayPal Checkout genericError 提前结束，已无后续轮次，本次自动运行结束。`,
+                  'warn'
+                );
+                forceFreshTabsNextRun = true;
+                break;
+              }
               stoppedEarly = true;
               await broadcastAutoRunStatus('stopped', {
                 currentRun: targetRun,
@@ -1111,16 +1238,16 @@
               cancelPendingCommands('当前轮因 hosted checkout 连续落到银行卡分支已终止。');
               await broadcastStopToContentScripts();
               await addLog(
-                `第 ${targetRun}/${totalRuns} 轮检测到 hosted checkout 连续落到银行卡分支，已达到默认自动重试上限，当前自动运行将停止。`,
+                `第 ${targetRun}/${totalRuns} 轮检测到 hosted checkout 连续落到银行卡分支，本轮将直接失败并跳过剩余重试。`,
                 'warn'
               );
-              stoppedEarly = true;
-              await broadcastAutoRunStatus('stopped', {
-                currentRun: targetRun,
-                totalRuns,
-                attemptRun,
-                sessionId: 0,
-              });
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因 hosted checkout 银行卡分支提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因 hosted checkout 银行卡分支提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
               break;
             }
 
@@ -1134,43 +1261,45 @@
               cancelPendingCommands('当前轮因 PayPal 验证码自动 Resend 达到上限已终止。');
               await broadcastStopToContentScripts();
               await addLog(
-                `第 ${targetRun}/${totalRuns} 轮 PayPal 验证码自动 Resend 已达到上限，当前自动运行已停止；请尝试在页面手动获取验证码并填入。`,
+                `第 ${targetRun}/${totalRuns} 轮 PayPal 验证码自动 Resend 已达到上限，本轮将直接失败并跳过剩余重试。`,
                 'warn'
               );
-              stoppedEarly = true;
-              await broadcastAutoRunStatus('stopped', {
-                currentRun: targetRun,
-                totalRuns,
-                attemptRun,
-                sessionId: 0,
-              });
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因 PayPal 验证码自动 Resend 达到上限提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因 PayPal 验证码自动 Resend 达到上限提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
               break;
             }
 
             if (blockedByCloudCheckoutAlreadyPaid) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
               roundSummary.status = 'failed';
               roundSummary.finalFailureReason = reason;
               await setState({
                 autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
               });
               await appendRoundRecordIfNeeded('failed', reason, err);
-              cancelPendingCommands('当前轮因云端确认账号已开通 Plus，已停止自动重试。');
+              cancelPendingCommands('当前轮因云端确认账号已开通 Plus 已终止。');
               await broadcastStopToContentScripts();
               await addLog(
-                `第 ${targetRun}/${totalRuns} 轮云端返回 User is already paid，当前自动运行已停止，请检查 PLUS 是否已经开通。`,
+                `第 ${targetRun}/${totalRuns} 轮云端返回 User is already paid，本轮将直接失败并跳过剩余重试。`,
                 'warn'
               );
-              stoppedEarly = true;
-              await broadcastAutoRunStatus('stopped', {
-                currentRun: targetRun,
-                totalRuns,
-                attemptRun,
-                sessionId: 0,
-              });
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因云端确认账号已开通 Plus 提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因云端确认账号已开通 Plus 提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
               break;
             }
 
             if (blockedBySignupUserAlreadyExists) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
               roundSummary.status = 'failed';
               roundSummary.finalFailureReason = reason;
               await setState({
@@ -1199,6 +1328,110 @@
                 targetRun < totalRuns
                   ? `第 ${targetRun}/${totalRuns} 轮因 user_already_exists/用户已存在提前结束，自动流程将继续下一轮。`
                   : `第 ${targetRun}/${totalRuns} 轮因 user_already_exists/用户已存在提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedBySignupIdentityRateLimit) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因步骤 2 触发注册身份限流错误已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(`第 ${targetRun}/${totalRuns} 轮触发步骤 2 注册身份限流，本轮将直接失败并跳过剩余重试。`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因步骤 2 注册身份限流提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因步骤 2 注册身份限流提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedBySignupIdentityProviderMismatch) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因身份验证方式冲突已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(`第 ${targetRun}/${totalRuns} 轮触发 identity_provider_mismatch/身份验证方式冲突，本轮将直接失败并跳过剩余重试。`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因 identity_provider_mismatch/身份验证方式冲突提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因 identity_provider_mismatch/身份验证方式冲突提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedBySignupAccountDeactivated) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因账号已删除或停用已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(`第 ${targetRun}/${totalRuns} 轮触发 account_deactivated/账号已删除或停用，本轮将直接失败并跳过剩余重试。`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因 account_deactivated/账号已删除或停用提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因 account_deactivated/账号已删除或停用提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedByStep5StaleSignupVerification) {
+              await markRegistrationAccountUnavailableForAutoRun(err, registrationAccountUnavailableFlags).catch(() => false);
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因步骤 5 启动时认证页仍停留在邮箱验证码阶段已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(`第 ${targetRun}/${totalRuns} 轮触发步骤 5 认证页残留，本轮将直接失败并跳过剩余重试。`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因步骤 5 认证页残留提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因步骤 5 认证页残留提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedByAutoRunNextRoundPageFailure) {
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因认证页通信或跳转异常已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(`第 ${targetRun}/${totalRuns} 轮触发认证页通信/跳转异常，本轮将直接失败并跳过剩余重试。`, 'warn');
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因认证页通信/跳转异常提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因认证页通信/跳转异常提前结束，已无后续轮次，本次自动运行结束。`,
                 'warn'
               );
               forceFreshTabsNextRun = true;

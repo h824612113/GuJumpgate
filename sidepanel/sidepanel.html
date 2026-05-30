@@ -255,6 +255,69 @@
         <span class="data-label">默认代理</span>
         <input type="text" id="input-sub2api-default-proxy" class="data-input" placeholder="留空则不使用代理；或填写代理名称 / ID" />
       </div>
+      <div class="data-row" id="row-sub2api-error-refresh-enabled" style="display:none;">
+        <span class="data-label">老号刷新</span>
+        <div class="data-inline setting-pair">
+          <div class="setting-group setting-group-primary">
+            <label class="toggle-switch" for="input-sub2api-error-refresh-enabled" title="开启后可执行 SUB2API 远端 error 老号存活同步刷新">
+              <input type="checkbox" id="input-sub2api-error-refresh-enabled" />
+              <span class="toggle-switch-track" aria-hidden="true">
+                <span class="toggle-switch-thumb"></span>
+              </span>
+            </label>
+          </div>
+          <span class="setting-caption">独立模式，不影响当前注册流程</span>
+        </div>
+      </div>
+      <div class="data-row" id="row-sub2api-error-refresh-actions" style="display:none;">
+        <span class="data-label">刷新操作</span>
+        <div class="data-inline">
+          <button id="btn-start-sub2api-error-refresh" class="btn btn-outline btn-sm" type="button">开始刷新</button>
+        </div>
+      </div>
+      <div class="data-row" id="row-sub2api-error-refresh-stats" style="display:none;">
+        <span class="data-label">刷新统计</span>
+        <div id="sub2api-error-refresh-stats" class="sub2api-refresh-stats">
+          <div class="sub2api-refresh-stat"><span>总 Error</span><strong id="sub2api-error-refresh-total">0</strong></div>
+          <div class="sub2api-refresh-stat"><span>已刷新</span><strong id="sub2api-error-refresh-processed">0</strong></div>
+          <div class="sub2api-refresh-stat"><span>复活成功</span><strong id="sub2api-error-refresh-success">0</strong></div>
+          <div class="sub2api-refresh-stat"><span>删除失败号</span><strong id="sub2api-error-refresh-deleted">0</strong></div>
+          <div class="sub2api-refresh-stat"><span>本地未找到</span><strong id="sub2api-error-refresh-not-found">0</strong></div>
+          <div class="sub2api-refresh-stat"><span>复活比</span><strong id="sub2api-error-refresh-ratio">0/0</strong></div>
+          <div class="sub2api-refresh-stat is-wide"><span>当前邮箱</span><strong id="sub2api-error-refresh-current-email">-</strong></div>
+        </div>
+      </div>
+      <div class="data-row" id="row-sub2api-error-refresh-result" style="display:none;">
+        <span class="data-label">刷新结果</span>
+        <div id="sub2api-error-refresh-result" class="sub2api-refresh-result">
+          <div class="sub2api-refresh-result-meta">
+            <div class="sub2api-refresh-result-line">
+              <span>最近一轮</span>
+              <strong id="sub2api-error-refresh-last-summary">暂无记录</strong>
+            </div>
+            <div class="sub2api-refresh-result-line">
+              <span>本地快照</span>
+              <strong id="sub2api-error-refresh-history-path">未同步</strong>
+            </div>
+          </div>
+          <div class="sub2api-refresh-result-section">
+            <span class="sub2api-refresh-result-title">全部 error 条目状态</span>
+            <div id="sub2api-error-refresh-all-list" class="sub2api-refresh-entry-list is-empty">暂无记录</div>
+          </div>
+          <div class="sub2api-refresh-result-section">
+            <span class="sub2api-refresh-result-title">本地未找到</span>
+            <div id="sub2api-error-refresh-not-found-list" class="sub2api-refresh-result-list is-empty">暂无记录</div>
+          </div>
+          <div class="sub2api-refresh-result-section">
+            <span class="sub2api-refresh-result-title">已删除远端 error</span>
+            <div id="sub2api-error-refresh-deleted-list" class="sub2api-refresh-result-list is-empty">暂无记录</div>
+          </div>
+          <div class="sub2api-refresh-result-section">
+            <span class="sub2api-refresh-result-title">已复活同步</span>
+            <div id="sub2api-error-refresh-revived-list" class="sub2api-refresh-result-list is-empty">暂无记录</div>
+          </div>
+        </div>
+      </div>
       <div class="data-row" id="row-codex2api-url" style="display:none;">
         <span class="data-label">Codex2API</span>
         <input type="text" id="input-codex2api-url" class="data-input"

@@ -24,7 +24,7 @@
     const PHONE_RESEND_SERVER_ERROR_PREFIX = 'PHONE_RESEND_SERVER_ERROR::';
     const STEP9_WHATSAPP_PAGE_RESTART_ERROR_PREFIX = 'STEP9_WHATSAPP_PAGE_RESTART::';
     const PHONE_MAX_USAGE_EXCEEDED_PATTERN = /phone_max_usage_exceeded/i;
-    const PHONE_NUMBER_USED_PATTERN = /phone_number_in_use|phone_max_usage_exceeded|already\s+(?:linked|associated)\s+to\s+the\s+maximum\s+number\s+of\s+accounts|associated\s+with\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*(?:已|被).*(?:使用|占用|绑定|注册|关联)|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*关联.*(?:最多|最大|上限).*(?:账户|账号)/i;
+    const PHONE_NUMBER_USED_PATTERN = /identity_provider_mismatch|different\s+identity\s+verification\s+method|different\s+authentication\s+method|registered\s+with\s+a\s+different\s+identity\s+verification\s+method|注册时不同的身份验证方式|使用注册时使用的身份验证方式重试|phone_number_in_use|phone_max_usage_exceeded|already\s+(?:linked|associated)\s+to\s+the\s+maximum\s+number\s+of\s+accounts|associated\s+with\s+the\s+maximum\s+number\s+of\s+accounts|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)|phone\s+number\s+has\s+already\s+been\s+used|already\s+associated\s+with\s+another\s+account|not\s+eligible\s+to\s+be\s+used|cannot\s+be\s+used\s+for\s+verification|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*(?:已|被).*(?:使用|占用|绑定|注册|关联)|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码).*关联.*(?:最多|最大|上限).*(?:账户|账号)/i;
     const PHONE_ROUTE_405_RECOVERY_FAILED_ERROR_PREFIX = 'PHONE_ROUTE_405_RECOVERY_FAILED::';
     const PHONE_ROUTE_405_RECOVERY_COOLDOWN_MS = 6000;
     const PHONE_RESEND_ROUTE_405_MAX_RECOVERIES = 2;
@@ -822,10 +822,6 @@
 
     function getAddPhoneErrorText() {
       const form = getAddPhoneForm();
-      if (!form) {
-        return '';
-      }
-
       const messages = [];
       const selectors = [
         '.react-aria-FieldError',
@@ -835,8 +831,26 @@
         '[aria-invalid="true"] + *',
         '[class*="error"]',
       ];
-      for (const selector of selectors) {
-        form.querySelectorAll(selector).forEach((el) => {
+      const roots = [
+        form,
+        document.querySelector('main'),
+        document.body,
+      ].filter(Boolean);
+      const seen = new Set();
+      for (const root of roots) {
+        if (seen.has(root)) {
+          continue;
+        }
+        seen.add(root);
+        for (const selector of selectors) {
+          root.querySelectorAll(selector).forEach((el) => {
+            const text = String(el?.textContent || '').replace(/\s+/g, ' ').trim();
+            if (text) {
+              messages.push(text);
+            }
+          });
+        }
+        root.querySelectorAll('[role="alert"], [aria-live]').forEach((el) => {
           const text = String(el?.textContent || '').replace(/\s+/g, ' ').trim();
           if (text) {
             messages.push(text);
@@ -844,7 +858,7 @@
         });
       }
 
-      const invalidInput = form.querySelector('input[aria-invalid="true"], input[data-invalid="true"]');
+      const invalidInput = form?.querySelector('input[aria-invalid="true"], input[data-invalid="true"]');
       if (invalidInput) {
         const wrapper = invalidInput.closest('form, [data-rac], div');
         const text = String(wrapper?.textContent || '').replace(/\s+/g, ' ').trim();
@@ -856,7 +870,22 @@
       const preferred = messages.find((text) => (
         /already|used|linked|eligible|invalid|phone|号码|手机号|错误|失败|try\s+again/i.test(text)
       ));
-      return preferred || messages[0] || '';
+      if (preferred) {
+        return preferred;
+      }
+      if (messages[0]) {
+        return messages[0];
+      }
+
+      const pageSnapshot = String(getPageTextSnapshot?.() || '').replace(/\s+/g, ' ').trim();
+      if (pageSnapshot && PHONE_NUMBER_USED_PATTERN.test(pageSnapshot)) {
+        const concise = pageSnapshot.match(
+          /identity_provider_mismatch|different\s+identity\s+verification\s+method[^.。!?]*[.。!?]?|different\s+authentication\s+method[^.。!?]*[.。!?]?|注册时不同的身份验证方式[^。!?]*[。!?]?|使用注册时使用的身份验证方式重试[^。!?]*[。!?]?|phone_number_in_use|phone_max_usage_exceeded|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)[^.。!?]*[.。!?]?|already\s+(?:linked|associated)[^.。!?]*[.。!?]?|not\s+eligible\s+to\s+be\s+used[^.。!?]*[.。!?]?|cannot\s+be\s+used\s+for\s+verification[^.。!?]*[.。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*(?:已|被)[^。!?]*(?:使用|占用|绑定|注册|关联)[^。!?]*[。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*关联[^。!?]*(?:最多|最大|上限)[^。!?]*(?:账户|账号)[^。!?]*[。!?]?/i
+        );
+        return String(concise?.[0] || pageSnapshot).trim();
+      }
+
+      return '';
     }
 
     function getPhoneVerificationInlineMessages() {
@@ -914,7 +943,7 @@
       const pageSnapshot = String(getPageTextSnapshot?.() || '').replace(/\s+/g, ' ').trim();
       if (pageSnapshot && PHONE_NUMBER_USED_PATTERN.test(pageSnapshot)) {
         const concise = pageSnapshot.match(
-          /phone_number_in_use|phone_max_usage_exceeded|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)[^.。!?]*[.。!?]?|already\s+(?:linked|associated)[^.。!?]*[.。!?]?|not\s+eligible\s+to\s+be\s+used[^.。!?]*[.。!?]?|cannot\s+be\s+used\s+for\s+verification[^.。!?]*[.。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*(?:已|被)[^。!?]*(?:使用|占用|绑定|注册|关联)[^。!?]*[。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*关联[^。!?]*(?:最多|最大|上限)[^。!?]*(?:账户|账号)[^。!?]*[。!?]?/i
+          /identity_provider_mismatch|different\s+identity\s+verification\s+method[^.。!?]*[.。!?]?|different\s+authentication\s+method[^.。!?]*[.。!?]?|注册时不同的身份验证方式[^。!?]*[。!?]?|使用注册时使用的身份验证方式重试[^。!?]*[。!?]?|phone_number_in_use|phone_max_usage_exceeded|phone\s+number\s+is\s+already\s+(?:in\s+use|linked|registered)[^.。!?]*[.。!?]?|already\s+(?:linked|associated)[^.。!?]*[.。!?]?|not\s+eligible\s+to\s+be\s+used[^.。!?]*[.。!?]?|cannot\s+be\s+used\s+for\s+verification[^.。!?]*[.。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*(?:已|被)[^。!?]*(?:使用|占用|绑定|注册|关联)[^。!?]*[。!?]?|(?:电话号码|手机号|手机号码|号码|该手机号|此电话号码)[^。!?]*关联[^。!?]*(?:最多|最大|上限)[^。!?]*(?:账户|账号)[^。!?]*[。!?]?/i
         );
         return String(concise?.[0] || pageSnapshot).trim();
       }

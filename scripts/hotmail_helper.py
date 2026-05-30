@@ -66,6 +66,7 @@ FETCH_LIMIT_DEFAULT = 5
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ACCOUNT_LOG_PATH = os.path.join(BASE_DIR, "data", "account-run-history.txt")
 ACCOUNT_RECORDS_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "account-run-history.json")
+SUB2API_ERROR_REFRESH_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "sub2api-error-refresh-history.json")
 ACCOUNT_RECORDS_LOCK = threading.Lock()
 
 
@@ -335,6 +336,215 @@ def sync_account_run_records(payload):
             json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
     return ACCOUNT_RECORDS_SNAPSHOT_PATH
+
+
+def normalize_sub2api_error_refresh_detail(detail):
+    if not isinstance(detail, dict):
+        return None
+
+    email_addr = str(detail.get("email") or "").strip().lower()
+    category = str(detail.get("category") or "").strip()
+    if not email_addr or not category:
+        return None
+
+    remote_account_id_raw = detail.get("remoteAccountId")
+    try:
+        remote_account_id = int(remote_account_id_raw)
+    except (TypeError, ValueError):
+        remote_account_id = 0
+    if remote_account_id < 0:
+        remote_account_id = 0
+
+    return {
+        "email": email_addr,
+        "remoteAccountId": remote_account_id,
+        "localAccountId": str(detail.get("localAccountId") or "").strip(),
+        "category": category,
+        "status": str(detail.get("status") or "").strip(),
+        "statusLabel": str(detail.get("statusLabel") or "").strip(),
+        "reason": str(detail.get("reason") or "").strip(),
+        "planType": str(detail.get("planType") or "").strip(),
+        "processedAt": str(detail.get("processedAt") or "").strip() or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }
+
+
+def normalize_sub2api_error_refresh_all_entry(entry):
+    normalized = normalize_sub2api_error_refresh_detail(entry)
+    if not normalized:
+        return None
+
+    category = normalized["category"]
+    status = normalized["status"]
+    status_label = normalized["statusLabel"]
+    if not status:
+        if category == "synced_success":
+            status = "revived_success"
+            status_label = status_label or "已复活"
+        elif category == "not_found_locally":
+            status = "not_found_locally"
+            status_label = status_label or "本地未找到"
+        elif category == "deleted_non_plus":
+            status = "dead_non_plus"
+            status_label = status_label or "已判死"
+        elif category == "deleted_after_reauth_failed":
+            status = "dead_reauth_failed"
+            status_label = status_label or "已判死"
+        else:
+            status = "pending"
+            status_label = status_label or "待刷新"
+
+    normalized["status"] = status
+    normalized["statusLabel"] = status_label or "待刷新"
+    return normalized
+
+
+def build_sub2api_error_refresh_entry_key(entry):
+    try:
+        remote_account_id = int(entry.get("remoteAccountId") or 0)
+    except (TypeError, ValueError):
+        remote_account_id = 0
+    if remote_account_id > 0:
+        return f"id:{remote_account_id}"
+    email_addr = str(entry.get("email") or "").strip().lower()
+    return f"email:{email_addr}" if email_addr else ""
+
+
+def sort_sub2api_error_refresh_entries(entries):
+    return sorted(
+        entries,
+        key=lambda item: (
+            -(datetime.fromisoformat(str(item.get("processedAt") or "").replace("Z", "+00:00")).timestamp()
+              if str(item.get("processedAt") or "").strip()
+              else 0),
+            int(item.get("remoteAccountId") or 0),
+        ),
+    )
+
+
+def merge_sub2api_error_refresh_all_entries(all_entries, details):
+    merged = {}
+    for item in details:
+        normalized = normalize_sub2api_error_refresh_all_entry(item)
+        if not normalized:
+            continue
+        key = build_sub2api_error_refresh_entry_key(normalized)
+        if key:
+            merged[key] = normalized
+
+    for item in all_entries:
+        normalized = normalize_sub2api_error_refresh_all_entry(item)
+        if not normalized:
+            continue
+        key = build_sub2api_error_refresh_entry_key(normalized)
+        if not key:
+            continue
+        existing = merged.get(key) or {}
+        merged[key] = {
+            **existing,
+            **normalized,
+            "category": normalized.get("category") or existing.get("category") or "",
+            "status": normalized.get("status") or existing.get("status") or "",
+            "statusLabel": normalized.get("statusLabel") or existing.get("statusLabel") or "",
+            "reason": normalized.get("reason") or existing.get("reason") or "",
+            "planType": normalized.get("planType") or existing.get("planType") or "",
+            "processedAt": normalized.get("processedAt") or existing.get("processedAt") or "",
+            "localAccountId": normalized.get("localAccountId") or existing.get("localAccountId") or "",
+        }
+
+    return sort_sub2api_error_refresh_entries(list(merged.values()))
+
+
+def normalize_sub2api_error_refresh_run(run):
+    if not isinstance(run, dict):
+        return None
+
+    run_id = str(run.get("runId") or "").strip()
+    if not run_id:
+        return None
+
+    details = []
+    for item in run.get("details") if isinstance(run.get("details"), list) else []:
+        normalized_detail = normalize_sub2api_error_refresh_detail(item)
+        if normalized_detail:
+            details.append(normalized_detail)
+    all_entries = merge_sub2api_error_refresh_all_entries(
+        run.get("allEntries") if isinstance(run.get("allEntries"), list) else [],
+        details,
+    )
+
+    total_remote_errors = max(0, int(run.get("totalRemoteErrors") or 0))
+    processed_count = max(0, int(run.get("processedCount") or 0))
+    revived_success_count = max(0, int(run.get("revivedSuccessCount") or 0))
+    deleted_after_reauth_failed_count = max(0, int(run.get("deletedAfterReauthFailedCount") or 0))
+    not_found_locally_count = max(0, int(run.get("notFoundLocallyCount") or 0))
+    revived_entries = []
+    deleted_entries = []
+    not_found_entries = []
+    for item in details:
+        picked = {
+            "email": item["email"],
+            "remoteAccountId": item["remoteAccountId"],
+            "localAccountId": item["localAccountId"],
+            "reason": item["reason"],
+            "planType": item["planType"],
+            "processedAt": item["processedAt"],
+        }
+        if item["category"] == "synced_success":
+            revived_entries.append(picked)
+        elif item["category"] in {"deleted_after_reauth_failed", "deleted_non_plus"}:
+            deleted_entries.append(picked)
+        elif item["category"] == "not_found_locally":
+            not_found_entries.append(picked)
+
+    return {
+        "runId": run_id,
+        "startedAt": str(run.get("startedAt") or "").strip() or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "finishedAt": str(run.get("finishedAt") or "").strip(),
+        "totalRemoteErrors": total_remote_errors,
+        "processedCount": processed_count,
+        "revivedSuccessCount": revived_success_count,
+        "deletedAfterReauthFailedCount": deleted_after_reauth_failed_count,
+        "notFoundLocallyCount": not_found_locally_count,
+        "details": details,
+        "allEntries": all_entries,
+        "revivedEntries": revived_entries,
+        "deletedEntries": deleted_entries,
+        "notFoundEntries": not_found_entries,
+    }
+
+
+def normalize_sub2api_error_refresh_payload(payload):
+    if not isinstance(payload, dict):
+        raise RuntimeError("Invalid SUB2API error refresh snapshot payload")
+
+    runs = []
+    for item in payload.get("runs") if isinstance(payload.get("runs"), list) else []:
+        normalized_run = normalize_sub2api_error_refresh_run(item)
+        if normalized_run:
+            runs.append(normalized_run)
+
+    return {
+        "generatedAt": str(payload.get("generatedAt") or "").strip() or datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "summary": {
+            "totalRuns": len(runs),
+            "totalRemoteErrors": sum(max(0, int(item.get("totalRemoteErrors") or 0)) for item in runs),
+            "processedCount": sum(max(0, int(item.get("processedCount") or 0)) for item in runs),
+            "revivedSuccessCount": sum(max(0, int(item.get("revivedSuccessCount") or 0)) for item in runs),
+            "deletedAfterReauthFailedCount": sum(max(0, int(item.get("deletedAfterReauthFailedCount") or 0)) for item in runs),
+            "notFoundLocallyCount": sum(max(0, int(item.get("notFoundLocallyCount") or 0)) for item in runs),
+        },
+        "runs": runs,
+    }
+
+
+def sync_sub2api_error_refresh_records(payload):
+    normalized_payload = normalize_sub2api_error_refresh_payload(payload)
+    os.makedirs(os.path.dirname(SUB2API_ERROR_REFRESH_SNAPSHOT_PATH), exist_ok=True)
+    with ACCOUNT_RECORDS_LOCK:
+        with open(SUB2API_ERROR_REFRESH_SNAPSHOT_PATH, "w", encoding="utf-8") as handle:
+            json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+    return SUB2API_ERROR_REFRESH_SNAPSHOT_PATH
 
 
 def try_refresh_access_token(endpoint, client_id, refresh_token):
@@ -878,6 +1088,14 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
 
             if request_path == "/sync-account-run-records":
                 file_path = sync_account_run_records(payload)
+                json_response(self, 200, {
+                    "ok": True,
+                    "filePath": file_path,
+                })
+                return
+
+            if request_path == "/sync-sub2api-error-refresh-records":
+                file_path = sync_sub2api_error_refresh_records(payload)
                 json_response(self, 200, {
                     "ok": True,
                     "filePath": file_path,

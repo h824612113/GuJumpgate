@@ -674,7 +674,7 @@ async function runHostedOpenAiCheckoutStep(payload = {}) {
     const amountLabel = amountSummary.rawAmount || (
       Number.isFinite(Number(amountSummary.amount)) ? String(amountSummary.amount) : '未知金额'
     );
-    throw new Error(`PLUS_CHECKOUT_NON_FREE_TRIAL::步骤 6：检测到今日应付金额不是 0（${amountLabel}），当前账号没有免费试用资格，已自动停止整个流程。`);
+    throw new Error(`PLUS_CHECKOUT_NON_FREE_TRIAL::步骤 6：检测到今日应付金额不是 0（${amountLabel}），当前账号没有免费试用资格。`);
   }
 
   const cardFallbackState = getHostedOpenAiCardFallbackState();

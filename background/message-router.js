@@ -177,6 +177,9 @@
       setLuckmailPurchaseDisabledState,
       setLuckmailPurchasePreservedState,
       setLuckmailPurchaseUsedState,
+      startSub2ApiErrorRefresh = null,
+      stopSub2ApiErrorRefresh = null,
+      getSub2ApiErrorRefreshHistory = null,
       setPersistentSettings,
       setState,
       setNodeStatus,
@@ -1603,6 +1606,40 @@
 
         case 'GET_STATE': {
           return await getState();
+        }
+
+        case 'START_SUB2API_ERROR_REFRESH': {
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能开始老号存活同步刷新。');
+          }
+          if (typeof startSub2ApiErrorRefresh !== 'function') {
+            throw new Error('SUB2API 老号存活同步刷新能力尚未接入。');
+          }
+          const result = await startSub2ApiErrorRefresh({
+            stateOverride: state,
+          });
+          return { ok: true, ...result };
+        }
+
+        case 'STOP_SUB2API_ERROR_REFRESH': {
+          if (typeof stopSub2ApiErrorRefresh !== 'function') {
+            return { ok: true, stopped: false };
+          }
+          return await stopSub2ApiErrorRefresh();
+        }
+
+        case 'GET_SUB2API_ERROR_REFRESH_HISTORY': {
+          if (typeof getSub2ApiErrorRefreshHistory !== 'function') {
+            return { ok: true, history: [], filePath: '' };
+          }
+          const history = await getSub2ApiErrorRefreshHistory();
+          const state = await getState();
+          return {
+            ok: true,
+            history,
+            filePath: String(state?.sub2apiErrorRefreshHistoryPath || '').trim(),
+          };
         }
 
         case 'EXPORT_CURRENT_SESSION_JSON': {

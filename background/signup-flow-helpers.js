@@ -56,8 +56,10 @@
       });
     }
 
-    async function openSignupEntryTab(step = 1) {
+    async function openSignupEntryTab(step = 1, options = {}) {
+      const { forceFresh = false } = options || {};
       const tabId = await reuseOrCreateTab('signup-page', SIGNUP_ENTRY_URL, {
+        forceNew: Boolean(forceFresh),
         inject: SIGNUP_PAGE_INJECT_FILES,
         injectSource: 'signup-page',
       });
@@ -167,6 +169,20 @@
       }
 
       if (!landingState) {
+        const authStateResult = await sendToContentScriptResilient('signup-page', {
+          type: 'ENSURE_SIGNUP_ENTRY_READY',
+          step,
+          source: 'background',
+          payload: {},
+        }, {
+          timeoutMs: 12000,
+          retryDelayMs: 600,
+          logMessage: `步骤 ${step}：注册身份提交后页面仍在切换，正在确认是否进入认证错误页...`,
+        }).catch(() => null);
+        const authState = String(authStateResult?.state || '').trim().toLowerCase();
+        if (authState === 'signup_timeout_error_page') {
+          throw new Error(`步骤 ${step}：注册身份提交后进入认证错误页，请检查页面提示。URL: ${landingUrl || authStateResult?.url || 'unknown'}`);
+        }
         throw new Error(`注册身份提交后未能识别当前页面，既不是密码页、验证码页，也不是资料页。URL: ${landingUrl || 'unknown'}`);
       }
 

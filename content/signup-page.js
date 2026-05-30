@@ -710,6 +710,29 @@ function getSignupPasswordDisplayedEmail() {
 }
 
 function inspectSignupEntryState() {
+  const signupRetryState = getCurrentAuthRetryPageState('signup');
+  if (signupRetryState) {
+    if (signupRetryState.accountDeactivatedBlocked) {
+      return {
+        state: 'account_deactivated',
+        errorText: String(signupRetryState.text || '').replace(/\s+/g, ' ').trim(),
+        url: location.href,
+      };
+    }
+    if (signupRetryState.identityProviderMismatchBlocked) {
+      return {
+        state: 'identity_provider_mismatch',
+        errorText: String(signupRetryState.text || '').replace(/\s+/g, ' ').trim(),
+        url: location.href,
+      };
+    }
+    return {
+      state: 'signup_timeout_error_page',
+      retryState: signupRetryState,
+      url: location.href,
+    };
+  }
+
   if (typeof isPhoneVerificationPageReady === 'function' && isPhoneVerificationPageReady()) {
     return {
       state: 'phone_verification_page',
@@ -1235,6 +1258,12 @@ function normalizeSignupEntryReadyResult(snapshot) {
 
 async function ensureSignupEntryReady(timeout = 25000) {
   let snapshot = await waitForSignupEntryState({ timeout, autoOpenEntry: false });
+  if (snapshot.state === 'account_deactivated') {
+    throw createSignupAccountDeactivatedError(snapshot.errorText || snapshot.url || '');
+  }
+  if (snapshot.state === 'identity_provider_mismatch') {
+    throw createSignupIdentityProviderMismatchError(snapshot.errorText || snapshot.url || '');
+  }
   let normalizedReadyResult = normalizeSignupEntryReadyResult(snapshot);
   if (normalizedReadyResult) {
     return normalizedReadyResult;
@@ -1245,6 +1274,12 @@ async function ensureSignupEntryReady(timeout = 25000) {
   if (isUnifiedAuthLoginEntryPage()) {
     await sleep(1200);
     snapshot = inspectSignupEntryState();
+    if (snapshot.state === 'account_deactivated') {
+      throw createSignupAccountDeactivatedError(snapshot.errorText || snapshot.url || '');
+    }
+    if (snapshot.state === 'identity_provider_mismatch') {
+      throw createSignupIdentityProviderMismatchError(snapshot.errorText || snapshot.url || '');
+    }
     normalizedReadyResult = normalizeSignupEntryReadyResult(snapshot);
     if (normalizedReadyResult) {
       return normalizedReadyResult;
@@ -1256,6 +1291,12 @@ async function ensureSignupEntryReady(timeout = 25000) {
       step: 2,
       logDiagnostics: true,
     });
+    if (snapshot.state === 'account_deactivated') {
+      throw createSignupAccountDeactivatedError(snapshot.errorText || snapshot.url || '');
+    }
+    if (snapshot.state === 'identity_provider_mismatch') {
+      throw createSignupIdentityProviderMismatchError(snapshot.errorText || snapshot.url || '');
+    }
     normalizedReadyResult = normalizeSignupEntryReadyResult(snapshot);
     if (normalizedReadyResult) {
       return normalizedReadyResult;
@@ -1331,6 +1372,14 @@ async function fillSignupEmailAndContinue(email, step) {
     };
   }
 
+  if (snapshot.state === 'account_deactivated') {
+    throw createSignupAccountDeactivatedError(snapshot.errorText || snapshot.url || location.href);
+  }
+
+  if (snapshot.state === 'identity_provider_mismatch') {
+    throw createSignupIdentityProviderMismatchError(snapshot.errorText || snapshot.url || location.href);
+  }
+
   if (snapshot.state !== 'email_entry' || !snapshot.emailInput) {
     if (step === 2) {
       log(`步骤 ${step}：未进入邮箱输入页，最终页面诊断快照：${JSON.stringify(getSignupEntryDiagnostics())}`, 'warn');
@@ -1368,6 +1417,20 @@ async function fillSignupEmailAndContinue(email, step) {
     submitted: true,
     email,
     url: location.href,
+  };
+}
+
+function getSignupIdentitySubmitErrorState() {
+  const retryState = getCurrentAuthRetryPageState('signup');
+  if (!retryState) {
+    return null;
+  }
+
+  const text = getPageTextSnapshot();
+  return {
+    ...retryState,
+    rateLimitExceeded: /rate_limit_exceeded|请求过多|请稍后重试|too\s+many\s+requests/i.test(text),
+    text,
   };
 }
 
@@ -2805,11 +2868,17 @@ const AUTH_ROUTE_ERROR_PATTERN = /405\s+method\s+not\s+allowed|route\s+error.*40
 const STEP4_405_RECOVERY_ERROR_PREFIX = 'STEP4_405_RECOVERY_LIMIT::';
 const STEP4_405_RECOVERY_LIMIT = 3;
 const SIGNUP_USER_ALREADY_EXISTS_ERROR_PREFIX = 'SIGNUP_USER_ALREADY_EXISTS::';
+const SIGNUP_IDENTITY_RATE_LIMIT_ERROR_PREFIX = 'SIGNUP_IDENTITY_RATE_LIMIT::';
+const SIGNUP_IDENTITY_PROVIDER_MISMATCH_ERROR_PREFIX = 'SIGNUP_IDENTITY_PROVIDER_MISMATCH::';
+const SIGNUP_ACCOUNT_DEACTIVATED_ERROR_PREFIX = 'SIGNUP_ACCOUNT_DEACTIVATED::';
+const STEP5_STALE_SIGNUP_VERIFICATION_ERROR_PREFIX = 'STEP5_STALE_SIGNUP_VERIFICATION::';
 const SIGNUP_PHONE_PASSWORD_MISMATCH_ERROR_PREFIX = 'SIGNUP_PHONE_PASSWORD_MISMATCH::';
 const AUTH_MAX_CHECK_ATTEMPTS_ERROR_PREFIX = 'AUTH_MAX_CHECK_ATTEMPTS::';
 const STEP8_EMAIL_IN_USE_ERROR_PREFIX = 'STEP8_EMAIL_IN_USE::';
 const SIGNUP_EMAIL_EXISTS_PATTERN = /与此电子邮件地址相关联的帐户已存在|account\s+associated\s+with\s+this\s+email\s+address\s+already\s+exists|email\s+address.*already\s+exists/i;
 const SIGNUP_PHONE_PASSWORD_MISMATCH_PATTERN = /incorrect\s+phone\s+number\s+or\s+password|phone\s+number\s+or\s+password|与此(?:电话|手机)号码相关联的帐户已存在|account\s+associated\s+with\s+this\s+phone\s+number\s+already\s+exists/i;
+const SIGNUP_IDENTITY_PROVIDER_MISMATCH_PATTERN = /identity_provider_mismatch|different\s+identity\s+verification\s+method|different\s+authentication\s+method|注册时不同的身份验证方式|使用注册时使用的身份验证方式重试/i;
+const SIGNUP_ACCOUNT_DEACTIVATED_PATTERN = /account_deactivated|账户(?:已被)?(?:删除|停用)|账号(?:已被)?(?:删除|停用)|you\s+do\s+not\s+have\s+an?\s+account\s+because\s+it\s+has\s+been\s+(?:deleted|deactivated)|account\s+has\s+been\s+(?:deleted|deactivated)/i;
 
 const authPageRecovery = self.MultiPageAuthPageRecovery?.createAuthPageRecovery?.({
   detailPattern: AUTH_TIMEOUT_ERROR_DETAIL_PATTERN,
@@ -2866,6 +2935,27 @@ function createSignupUserAlreadyExistsError() {
   );
 }
 
+function createSignupIdentityRateLimitError(detailText = '') {
+  const detail = String(detailText || '').replace(/\s+/g, ' ').trim();
+  return new Error(
+    `${SIGNUP_IDENTITY_RATE_LIMIT_ERROR_PREFIX}步骤 2：提交注册身份后触发 rate_limit_exceeded / 请求过多，当前轮将直接停止。${detail ? ` ${detail}` : ''}`
+  );
+}
+
+function createSignupIdentityProviderMismatchError(detailText = '') {
+  const detail = String(detailText || '').replace(/\s+/g, ' ').trim();
+  return new Error(
+    `${SIGNUP_IDENTITY_PROVIDER_MISMATCH_ERROR_PREFIX}步骤 2：检测到 identity_provider_mismatch / 身份验证方式冲突，当前轮将结束并进入下一轮。${detail ? ` ${detail}` : ''}`
+  );
+}
+
+function createSignupAccountDeactivatedError(detailText = '') {
+  const detail = String(detailText || '').replace(/\s+/g, ' ').trim();
+  return new Error(
+    `${SIGNUP_ACCOUNT_DEACTIVATED_ERROR_PREFIX}步骤 2：检测到 account_deactivated / 账号已删除或停用，当前轮将结束并进入下一轮。${detail ? ` ${detail}` : ''}`
+  );
+}
+
 function createSignupPhonePasswordMismatchError(detailText = '') {
   const detail = String(detailText || '').replace(/\s+/g, ' ').trim();
   const suffix = detail ? `页面提示：${detail}` : '页面提示注册手机号不可继续使用，需重新开始当前轮。';
@@ -2876,6 +2966,14 @@ function createSignupPhonePasswordMismatchError(detailText = '') {
 
 function createAuthMaxCheckAttemptsError() {
   return new Error(`${AUTH_MAX_CHECK_ATTEMPTS_ERROR_PREFIX}max_check_attempts on auth retry page; restart the current auth step without clicking Retry.`);
+}
+
+function createStep5StaleSignupVerificationError(detailText = '') {
+  const detail = String(detailText || '').replace(/\s+/g, ' ').trim();
+  const suffix = detail ? ` ${detail}` : '';
+  return new Error(
+    `${STEP5_STALE_SIGNUP_VERIFICATION_ERROR_PREFIX}步骤 5：资料页启动时认证页仍停留在邮箱验证码阶段，当前轮将结束并进入下一轮。${suffix}`
+  );
 }
 
 function createStep8EmailInUseError() {
@@ -3026,10 +3124,50 @@ function isLikelyLoggedInChatgptHomeUrl(rawUrl = location.href) {
   }
 }
 
+function getIdentityProviderMismatchPageState() {
+  const title = String(document?.title || '').replace(/\s+/g, ' ').trim();
+  const pageText = getPageTextSnapshot();
+  const combinedText = `${title} ${pageText}`.replace(/\s+/g, ' ').trim();
+  if (!SIGNUP_IDENTITY_PROVIDER_MISMATCH_PATTERN.test(combinedText)) {
+    return null;
+  }
+
+  return {
+    state: 'identity_provider_mismatch',
+    errorText: combinedText || location.href,
+    url: location.href,
+  };
+}
+
+function getAccountDeactivatedPageState() {
+  const title = String(document?.title || '').replace(/\s+/g, ' ').trim();
+  const pageText = getPageTextSnapshot();
+  const combinedText = `${title} ${pageText}`.replace(/\s+/g, ' ').trim();
+  if (!SIGNUP_ACCOUNT_DEACTIVATED_PATTERN.test(combinedText)) {
+    return null;
+  }
+
+  return {
+    state: 'account_deactivated',
+    errorText: combinedText || location.href,
+    url: location.href,
+  };
+}
+
 function getStep4PostVerificationState(options = {}) {
   const { ignoreVerificationVisibility = false } = options;
   if (isPhoneVerificationPageReady()) {
     return null;
+  }
+
+  const accountDeactivatedState = getAccountDeactivatedPageState();
+  if (accountDeactivatedState) {
+    return accountDeactivatedState;
+  }
+
+  const identityProviderMismatchState = getIdentityProviderMismatchPageState();
+  if (identityProviderMismatchState) {
+    return identityProviderMismatchState;
   }
 
   // Newer auth flows can briefly render profile fields before the email-verification
@@ -3726,11 +3864,6 @@ function getAuthTimeoutErrorPageState(options = {}) {
     return null;
   }
 
-  const retryButton = getAuthRetryButton({ allowDisabled: true });
-  if (!retryButton) {
-    return null;
-  }
-
   const text = getPageTextSnapshot();
   const titleMatched = AUTH_TIMEOUT_ERROR_TITLE_PATTERN.test(text)
     || AUTH_TIMEOUT_ERROR_TITLE_PATTERN.test(document.title || '');
@@ -3740,16 +3873,30 @@ function getAuthTimeoutErrorPageState(options = {}) {
   const maxCheckAttemptsBlocked = /max_check_attempts/i.test(text);
   const emailInUseBlocked = /email_in_use/i.test(text);
   const userAlreadyExistsBlocked = /user_already_exists/i.test(text);
+  const identityProviderMismatchBlocked = SIGNUP_IDENTITY_PROVIDER_MISMATCH_PATTERN.test(text);
+  const accountDeactivatedBlocked = SIGNUP_ACCOUNT_DEACTIVATED_PATTERN.test(text);
+  const retryButton = getAuthRetryButton({ allowDisabled: true });
 
-  if (!titleMatched && !detailMatched && !routeErrorMatched && !fetchFailedMatched && !maxCheckAttemptsBlocked && !emailInUseBlocked && !userAlreadyExistsBlocked) {
+  if (!titleMatched && !detailMatched && !routeErrorMatched && !fetchFailedMatched && !maxCheckAttemptsBlocked && !emailInUseBlocked && !userAlreadyExistsBlocked && !identityProviderMismatchBlocked && !accountDeactivatedBlocked) {
+    return null;
+  }
+
+  if (
+    !retryButton
+    && !maxCheckAttemptsBlocked
+    && !emailInUseBlocked
+    && !userAlreadyExistsBlocked
+    && !identityProviderMismatchBlocked
+    && !accountDeactivatedBlocked
+  ) {
     return null;
   }
 
   return {
     path,
     url: location.href,
-    retryButton,
-    retryEnabled: isActionEnabled(retryButton),
+    retryButton: retryButton || null,
+    retryEnabled: Boolean(retryButton && isActionEnabled(retryButton)),
     titleMatched,
     detailMatched,
     routeErrorMatched,
@@ -3757,6 +3904,9 @@ function getAuthTimeoutErrorPageState(options = {}) {
     maxCheckAttemptsBlocked,
     emailInUseBlocked,
     userAlreadyExistsBlocked,
+    identityProviderMismatchBlocked,
+    accountDeactivatedBlocked,
+    text,
   };
 }
 
@@ -3842,6 +3992,9 @@ async function recoverCurrentAuthRetryPage(payload = {}) {
 
     if (retryState.maxCheckAttemptsBlocked) {
       throw new Error('CF_SECURITY_BLOCKED::您已触发Cloudflare 安全防护系统，已完全停止流程，请不要短时间内多次进行重新发送验证码，连续刷新、反复点击重试会加重风控；请先关闭页面等待 15-30 分钟，让系统的临时限制自动解除。或者更换浏览器');
+    }
+    if (retryState.identityProviderMismatchBlocked) {
+      throw createSignupIdentityProviderMismatchError(retryState.text || location.href);
     }
     if (retryState.userAlreadyExistsBlocked) {
       throw createSignupUserAlreadyExistsError();
@@ -5035,6 +5188,22 @@ function inspectSignupVerificationState() {
     return { state: 'step5' };
   }
 
+  if (postVerificationState?.state === 'account_deactivated') {
+    return {
+      state: 'account_deactivated',
+      errorText: postVerificationState.errorText || '',
+      url: postVerificationState.url || location.href,
+    };
+  }
+
+  if (postVerificationState?.state === 'identity_provider_mismatch') {
+    return {
+      state: 'identity_provider_mismatch',
+      errorText: postVerificationState.errorText || '',
+      url: postVerificationState.url || location.href,
+    };
+  }
+
   if (postVerificationState?.state === 'logged_in_home') {
     return {
       state: 'logged_in_home',
@@ -5082,6 +5251,7 @@ async function waitForSignupVerificationTransition(timeout = 5000) {
     }
     if (
       snapshot.state === 'step5'
+      || snapshot.state === 'account_deactivated'
       || snapshot.state === 'logged_in_home'
       || snapshot.state === 'verification'
       || snapshot.state === 'error'
@@ -5262,6 +5432,12 @@ async function waitForVerificationSubmitOutcome(step, timeout, options = {}) {
     if (retryState?.userAlreadyExistsBlocked) {
       throw createSignupUserAlreadyExistsError();
     }
+    if (retryState?.accountDeactivatedBlocked) {
+      throw createSignupAccountDeactivatedError(retryState.text || location.href);
+    }
+    if (retryState?.identityProviderMismatchBlocked) {
+      throw createSignupIdentityProviderMismatchError(retryState.text || location.href);
+    }
     if (step === 8 && retryState?.emailInUseBlocked) {
       throw createStep8EmailInUseError();
     }
@@ -5284,7 +5460,27 @@ async function waitForVerificationSubmitOutcome(step, timeout, options = {}) {
     }
 
     if (step === 4) {
+      const accountDeactivatedState = getAccountDeactivatedPageState();
+      if (accountDeactivatedState) {
+        throw createSignupAccountDeactivatedError(
+          accountDeactivatedState.errorText || accountDeactivatedState.url || location.href
+        );
+      }
+
+      const identityProviderMismatchState = getIdentityProviderMismatchPageState();
+      if (identityProviderMismatchState) {
+        throw createSignupIdentityProviderMismatchError(
+          identityProviderMismatchState.errorText || identityProviderMismatchState.url || location.href
+        );
+      }
+
       const postVerificationState = getStep4PostVerificationState({ ignoreVerificationVisibility: true });
+      if (postVerificationState?.state === 'account_deactivated') {
+        throw createSignupAccountDeactivatedError(postVerificationState.errorText || postVerificationState.url || location.href);
+      }
+      if (postVerificationState?.state === 'identity_provider_mismatch') {
+        throw createSignupIdentityProviderMismatchError(postVerificationState.errorText || postVerificationState.url || location.href);
+      }
       if (postVerificationState?.state === 'logged_in_home') {
         return {
           success: true,
@@ -5322,12 +5518,38 @@ async function waitForVerificationSubmitOutcome(step, timeout, options = {}) {
   }
 
   if (step === 4) {
+    const accountDeactivatedState = getAccountDeactivatedPageState();
+    if (accountDeactivatedState) {
+      throw createSignupAccountDeactivatedError(
+        accountDeactivatedState.errorText || accountDeactivatedState.url || location.href
+      );
+    }
+
+    const identityProviderMismatchState = getIdentityProviderMismatchPageState();
+    if (identityProviderMismatchState) {
+      throw createSignupIdentityProviderMismatchError(
+        identityProviderMismatchState.errorText || identityProviderMismatchState.url || location.href
+      );
+    }
+
     const signupRetryState = getCurrentAuthRetryPageState('signup');
     if (signupRetryState?.userAlreadyExistsBlocked) {
       throw createSignupUserAlreadyExistsError();
     }
+    if (signupRetryState?.accountDeactivatedBlocked) {
+      throw createSignupAccountDeactivatedError(signupRetryState.text || location.href);
+    }
+    if (signupRetryState?.identityProviderMismatchBlocked) {
+      throw createSignupIdentityProviderMismatchError(signupRetryState.text || location.href);
+    }
 
     const postVerificationState = getStep4PostVerificationState({ ignoreVerificationVisibility: true });
+    if (postVerificationState?.state === 'account_deactivated') {
+      throw createSignupAccountDeactivatedError(postVerificationState.errorText || postVerificationState.url || location.href);
+    }
+    if (postVerificationState?.state === 'identity_provider_mismatch') {
+      throw createSignupIdentityProviderMismatchError(postVerificationState.errorText || postVerificationState.url || location.href);
+    }
     if (postVerificationState?.state === 'logged_in_home') {
       return {
         success: true,
@@ -5353,6 +5575,23 @@ async function waitForVerificationSubmitOutcome(step, timeout, options = {}) {
       invalidCode: true,
       errorText: getVerificationErrorText() || '提交后仍停留在验证码页面，准备重新发送验证码。',
     };
+  }
+
+  const identityProviderMismatchState = step === 4
+    ? getIdentityProviderMismatchPageState()
+    : null;
+  const accountDeactivatedState = step === 4
+    ? getAccountDeactivatedPageState()
+    : null;
+  if (accountDeactivatedState) {
+    throw createSignupAccountDeactivatedError(
+      accountDeactivatedState.errorText || accountDeactivatedState.url || location.href
+    );
+  }
+  if (identityProviderMismatchState) {
+    throw createSignupIdentityProviderMismatchError(
+      identityProviderMismatchState.errorText || identityProviderMismatchState.url || location.href
+    );
   }
 
   return { success: true, assumed: true };
@@ -6990,6 +7229,170 @@ function getStep5DirectCompletionPayload({ isAgeMode = false, navigationStarted 
   return payload;
 }
 
+function getStep5EntryState() {
+  if (isStep5ProfileStillVisible()) {
+    return { ready: true };
+  }
+
+  if (isLikelyLoggedInChatgptHomeUrl()) {
+    return {
+      skipProfileStep: true,
+      skipProfileStepReason: 'logged_in_home',
+      url: location.href,
+    };
+  }
+
+  const retryState = getStep5AuthRetryPageState();
+  if (retryState?.userAlreadyExistsBlocked) {
+    return { userAlreadyExistsBlocked: true, url: location.href };
+  }
+  if (retryState?.accountDeactivatedBlocked) {
+    return {
+      accountDeactivatedBlocked: true,
+      errorText: String(retryState.text || '').replace(/\s+/g, ' ').trim(),
+      url: location.href,
+    };
+  }
+  if (retryState?.identityProviderMismatchBlocked) {
+    return {
+      identityProviderMismatchBlocked: true,
+      errorText: String(retryState.text || '').replace(/\s+/g, ' ').trim(),
+      url: location.href,
+    };
+  }
+  if (retryState?.maxCheckAttemptsBlocked) {
+    return { maxCheckAttemptsBlocked: true, url: location.href };
+  }
+  if (retryState) {
+    return {
+      retryPage: true,
+      retryEnabled: Boolean(retryState.retryEnabled),
+      url: location.href,
+    };
+  }
+
+  const postVerificationState = getStep4PostVerificationState();
+  if (postVerificationState?.state === 'step5') {
+    return { ready: true };
+  }
+  if (postVerificationState?.state === 'account_deactivated') {
+    return {
+      accountDeactivatedBlocked: true,
+      errorText: String(postVerificationState.errorText || '').replace(/\s+/g, ' ').trim(),
+      url: postVerificationState.url || location.href,
+    };
+  }
+  if (postVerificationState?.state === 'logged_in_home') {
+    return {
+      skipProfileStep: true,
+      skipProfileStepReason: 'logged_in_home',
+      url: postVerificationState.url || location.href,
+    };
+  }
+
+  if (isEmailVerificationPage() || isVerificationPageStillVisible()) {
+    return {
+      verificationPending: true,
+      url: location.href,
+    };
+  }
+
+  let signupAuthHost = false;
+  try {
+    const parsed = new URL(String(location.href || '').trim());
+    signupAuthHost = ['auth.openai.com', 'auth0.openai.com', 'accounts.openai.com']
+      .includes(String(parsed.hostname || '').toLowerCase());
+  } catch {
+    signupAuthHost = false;
+  }
+
+  if (signupAuthHost) {
+    return {
+      unknownAuthPage: true,
+      url: location.href,
+    };
+  }
+
+  return { ready: true };
+}
+
+async function ensureStep5EntryReady(options = {}) {
+  const {
+    timeoutMs = 15000,
+    maxRetryRecoveries = 2,
+  } = options;
+  const start = Date.now();
+  let retryRecoveries = 0;
+  let loggedVerificationWait = false;
+  let loggedUnknownAuthWait = false;
+
+  while (Date.now() - start < timeoutMs) {
+    throwIfStopped();
+    const state = getStep5EntryState();
+
+    if (state.ready || state.skipProfileStep) {
+      return state;
+    }
+
+    if (state.userAlreadyExistsBlocked) {
+      throw createSignupUserAlreadyExistsError();
+    }
+    if (state.accountDeactivatedBlocked) {
+      throw createSignupAccountDeactivatedError(state.errorText || state.url || '');
+    }
+    if (state.identityProviderMismatchBlocked) {
+      throw createSignupIdentityProviderMismatchError(state.errorText || state.url || '');
+    }
+    if (state.maxCheckAttemptsBlocked) {
+      throw createAuthMaxCheckAttemptsError();
+    }
+
+    if (state.retryPage) {
+      if (retryRecoveries >= maxRetryRecoveries) {
+        throw createStep5StaleSignupVerificationError(`URL: ${state.url || location.href}`);
+      }
+      retryRecoveries += 1;
+      log(`步骤 5：资料页启动前仍在认证重试页，正在自动恢复（${retryRecoveries}/${maxRetryRecoveries}）...`, 'warn');
+      await recoverStep5SubmitRetryPage({
+        timeoutMs: 12000,
+        maxClickAttempts: 2,
+      });
+      continue;
+    }
+
+    if (state.verificationPending && !loggedVerificationWait) {
+      loggedVerificationWait = true;
+      log('步骤 5：资料页启动前检测到邮箱验证码页仍未退出，先等待认证页完成跳转...', 'warn');
+    } else if (state.unknownAuthPage && !loggedUnknownAuthWait) {
+      loggedUnknownAuthWait = true;
+      log('步骤 5：资料页启动前仍停留在未知认证页，先等待页面继续跳转...', 'warn');
+    }
+
+    await sleep(250);
+  }
+
+  const finalState = getStep5EntryState();
+  if (finalState.skipProfileStep) {
+    return finalState;
+  }
+  if (finalState.userAlreadyExistsBlocked) {
+    throw createSignupUserAlreadyExistsError();
+  }
+  if (finalState.accountDeactivatedBlocked) {
+    throw createSignupAccountDeactivatedError(finalState.errorText || finalState.url || '');
+  }
+  if (finalState.identityProviderMismatchBlocked) {
+    throw createSignupIdentityProviderMismatchError(finalState.errorText || finalState.url || '');
+  }
+  if (finalState.maxCheckAttemptsBlocked) {
+    throw createAuthMaxCheckAttemptsError();
+  }
+  if (finalState.verificationPending || finalState.retryPage || finalState.unknownAuthPage) {
+    throw createStep5StaleSignupVerificationError(`URL: ${finalState.url || location.href}`);
+  }
+  return finalState;
+}
+
 function isCombinedSignupVerificationProfilePage() {
   if (!isEmailVerificationPage() || !isVerificationPageStillVisible()) {
     return false;
@@ -7429,6 +7832,21 @@ async function step5_fillNameBirthday(payload) {
   const hasBirthdayData = [year, month, day].every(value => value != null && !Number.isNaN(Number(value)));
   if (!hasBirthdayData && (resolvedAge == null || Number.isNaN(Number(resolvedAge)))) {
     throw new Error('未提供生日或年龄数据。');
+  }
+
+  const entryState = await ensureStep5EntryReady();
+  if (entryState?.skipProfileStep) {
+    const completionPayload = getStep5DirectCompletionPayload({
+      outcome: {
+        state: entryState.skipProfileStepReason || 'logged_in_home',
+        url: entryState.url || location.href,
+      },
+    });
+    completionPayload.skipProfileStep = true;
+    completionPayload.skipProfileStepReason = entryState.skipProfileStepReason || 'logged_in_home';
+    reportComplete(5, completionPayload);
+    log('步骤 5：页面已直接进入已登录态，自动跳过资料填写。', 'warn');
+    return completionPayload;
   }
 
   const fullName = `${firstName} ${lastName}`;

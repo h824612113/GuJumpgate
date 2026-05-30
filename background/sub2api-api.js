@@ -768,6 +768,252 @@
       return Object.keys(extra).length ? extra : undefined;
     }
 
+    function extractSub2ApiPaginatedItems(payload) {
+      if (Array.isArray(payload)) {
+        return payload;
+      }
+      if (payload && typeof payload === 'object' && Array.isArray(payload.items)) {
+        return payload.items;
+      }
+      return [];
+    }
+
+    function normalizeSub2ApiAccountId(value) {
+      const numeric = Number(value);
+      if (!Number.isSafeInteger(numeric) || numeric <= 0) {
+        return 0;
+      }
+      return numeric;
+    }
+
+    function getSub2ApiAccountEmail(account = {}) {
+      return normalizeEmailValue(
+        account?.credentials?.email
+        || account?.extra?.email
+        || account?.name
+      );
+    }
+
+    function isSub2ApiAccountError(account = {}) {
+      return normalizeString(account?.status).toLowerCase() === 'error';
+    }
+
+    function isSub2ApiAccountAlive(account = {}) {
+      return normalizeString(account?.status).toLowerCase() === 'active';
+    }
+
+    function dedupeSub2ApiAccountsById(accounts = []) {
+      const deduped = new Map();
+      for (const account of Array.isArray(accounts) ? accounts : []) {
+        const accountId = normalizeSub2ApiAccountId(account?.id);
+        if (!accountId || deduped.has(accountId)) {
+          continue;
+        }
+        deduped.set(accountId, account);
+      }
+      return [...deduped.values()];
+    }
+
+    async function listSub2ApiAccountsByEmail(origin, token, email, options = {}) {
+      const normalizedEmail = normalizeEmailValue(email);
+      if (!normalizedEmail) {
+        return [];
+      }
+
+      const collected = [];
+      const pageSize = Math.max(1, Math.min(1000, Number(options.pageSize) || 100));
+      const maxPages = Math.max(1, Math.min(20, Number(options.maxPages) || 10));
+      for (let page = 1; page <= maxPages; page += 1) {
+        const searchParams = new URLSearchParams({
+          page: String(page),
+          page_size: String(pageSize),
+          platform: 'openai',
+          type: 'oauth',
+          search: normalizedEmail,
+        });
+        const payload = await requestJson(origin, `/api/v1/admin/accounts?${searchParams.toString()}`, {
+          method: 'GET',
+          token,
+          timeoutMs: options.timeoutMs,
+        });
+        const items = extractSub2ApiPaginatedItems(payload)
+          .filter((account) => getSub2ApiAccountEmail(account) === normalizedEmail);
+        collected.push(...items);
+
+        const totalPages = Math.max(1, Number(payload?.pages) || 1);
+        if (page >= totalPages || items.length < pageSize) {
+          break;
+        }
+      }
+
+      return dedupeSub2ApiAccountsById(collected);
+    }
+
+    async function listSub2ApiErrorOpenAiOauthAccounts(origin, token, options = {}) {
+      const collected = [];
+      const pageSize = Math.max(1, Math.min(1000, Number(options.pageSize) || 100));
+      const maxPages = Math.max(1, Math.min(200, Number(options.maxPages) || 50));
+      for (let page = 1; page <= maxPages; page += 1) {
+        const searchParams = new URLSearchParams({
+          page: String(page),
+          page_size: String(pageSize),
+          platform: 'openai',
+          type: 'oauth',
+        });
+        const payload = await requestJson(origin, `/api/v1/admin/accounts?${searchParams.toString()}`, {
+          method: 'GET',
+          token,
+          timeoutMs: options.timeoutMs,
+        });
+        const pageItems = extractSub2ApiPaginatedItems(payload);
+        const items = pageItems.filter((account) => isSub2ApiAccountError(account));
+        collected.push(...items);
+
+        const totalPages = Math.max(1, Number(payload?.pages) || 1);
+        const total = Math.max(0, Number(payload?.total) || 0);
+        if (page >= totalPages || pageItems.length < pageSize || collected.length >= total) {
+          break;
+        }
+      }
+
+      return dedupeSub2ApiAccountsById(collected);
+    }
+
+    async function deleteSub2ApiAccount(origin, token, accountId, options = {}) {
+      const normalizedId = normalizeSub2ApiAccountId(accountId);
+      if (!normalizedId) {
+        return null;
+      }
+      return requestJson(origin, `/api/v1/admin/accounts/${normalizedId}`, {
+        method: 'DELETE',
+        token,
+        timeoutMs: options.timeoutMs,
+      });
+    }
+
+    async function updateSub2ApiAccount(origin, token, accountId, payload, options = {}) {
+      const normalizedId = normalizeSub2ApiAccountId(accountId);
+      if (!normalizedId) {
+        throw new Error('待更新的 SUB2API 账号 ID 无效。');
+      }
+      return requestJson(origin, `/api/v1/admin/accounts/${normalizedId}`, {
+        method: 'PUT',
+        token,
+        timeoutMs: options.timeoutMs,
+        body: payload,
+      });
+    }
+
+    function pickCanonicalSub2ApiAccount(accounts = []) {
+      const aliveAccounts = dedupeSub2ApiAccountsById(accounts)
+        .filter((account) => isSub2ApiAccountAlive(account));
+      if (!aliveAccounts.length) {
+        return null;
+      }
+      return aliveAccounts
+        .slice()
+        .sort((left, right) => normalizeSub2ApiAccountId(left?.id) - normalizeSub2ApiAccountId(right?.id))[0];
+    }
+
+    async function reconcileDuplicateOpenAiOauthAccounts(origin, token, email, payload, options = {}) {
+      const normalizedEmail = normalizeEmailValue(email);
+      if (!normalizedEmail) {
+        return {
+          action: 'create',
+          created: false,
+          retainedAccountId: 0,
+        };
+      }
+
+      const accounts = await listSub2ApiAccountsByEmail(origin, token, normalizedEmail, options);
+      if (!accounts.length) {
+        return {
+          action: 'create',
+          created: false,
+          retainedAccountId: 0,
+        };
+      }
+
+      const logLabel = normalizeString(options.logLabel) || 'SUB2API';
+      const extraErrorAccounts = accounts.filter((account) => isSub2ApiAccountError(account));
+      const deleteTimeoutMs = options.deleteTimeoutMs || options.timeoutMs;
+      const deletedErrorIds = [];
+      for (const account of extraErrorAccounts) {
+        const accountId = normalizeSub2ApiAccountId(account?.id);
+        if (!accountId) {
+          continue;
+        }
+        try {
+          await deleteSub2ApiAccount(origin, token, accountId, { timeoutMs: deleteTimeoutMs });
+          deletedErrorIds.push(accountId);
+        } catch (error) {
+          await logWithOptions(
+            `${logLabel}：清理同邮箱异常账号 #${accountId} 失败：${error?.message || String(error || '')}`,
+            'warn',
+            options
+          );
+        }
+      }
+      if (deletedErrorIds.length) {
+        await logWithOptions(
+          `${logLabel}：已删除同邮箱异常账号 ${deletedErrorIds.map((id) => `#${id}`).join('、')}。`,
+          'info',
+          options
+        );
+      }
+
+      const canonicalAccount = pickCanonicalSub2ApiAccount(accounts);
+      if (!canonicalAccount) {
+        return {
+          action: 'create',
+          created: false,
+          retainedAccountId: 0,
+        };
+      }
+
+      const retainedAccountId = normalizeSub2ApiAccountId(canonicalAccount?.id);
+      await updateSub2ApiAccount(origin, token, retainedAccountId, payload, {
+        timeoutMs: options.updateTimeoutMs || options.timeoutMs,
+      });
+      await logWithOptions(
+        `${logLabel}：检测到同邮箱存活账号，已复用并更新 SUB2API 账号 #${retainedAccountId}。`,
+        'info',
+        options
+      );
+
+      const duplicateAliveAccounts = accounts.filter((account) => {
+        const accountId = normalizeSub2ApiAccountId(account?.id);
+        return accountId && accountId !== retainedAccountId && isSub2ApiAccountAlive(account);
+      });
+      const deletedDuplicateIds = [];
+      for (const account of duplicateAliveAccounts) {
+        const accountId = normalizeSub2ApiAccountId(account?.id);
+        try {
+          await deleteSub2ApiAccount(origin, token, accountId, { timeoutMs: deleteTimeoutMs });
+          deletedDuplicateIds.push(accountId);
+        } catch (error) {
+          await logWithOptions(
+            `${logLabel}：清理重复存活账号 #${accountId} 失败：${error?.message || String(error || '')}`,
+            'warn',
+            options
+          );
+        }
+      }
+      if (deletedDuplicateIds.length) {
+        await logWithOptions(
+          `${logLabel}：已删除重复存活账号 ${deletedDuplicateIds.map((id) => `#${id}`).join('、')}，仅保留 #${retainedAccountId}。`,
+          'info',
+          options
+        );
+      }
+
+      return {
+        action: 'updated',
+        created: false,
+        retainedAccountId,
+      };
+    }
+
     async function logWithOptions(message, level = 'info', options = {}) {
       await addLog(message, level, options.logOptions || {});
     }
@@ -915,15 +1161,38 @@
         createPayload.extra = extra;
       }
 
-      await logWithOptions(`${logLabel}：授权码交换成功，正在创建 SUB2API 账号（名称：${accountName}）...`, 'info', options);
-      const createdAccount = await requestJson(origin, '/api/v1/admin/accounts', {
-        method: 'POST',
-        token,
-        timeoutMs: options.createTimeoutMs,
-        body: createPayload,
+      const dedupeEmail = normalizeEmailValue(resolvedEmail || flowEmail);
+      const reconcileResult = await reconcileDuplicateOpenAiOauthAccounts(origin, token, dedupeEmail, {
+        name: accountName,
+        notes: '',
+        type: 'oauth',
+        credentials,
+        concurrency: DEFAULT_CONCURRENCY,
+        priority: accountPriority,
+        rate_multiplier: DEFAULT_RATE_MULTIPLIER,
+        group_ids: groupIds,
+        auto_pause_on_expired: true,
+        ...(proxyId ? { proxy_id: proxyId } : { proxy_id: null }),
+        ...(extra ? { extra } : {}),
+      }, {
+        ...options,
+        logLabel,
       });
 
-      const verifiedStatus = `SUB2API 已创建账号 #${createdAccount?.id || 'unknown'}`;
+      let verifiedStatus = '';
+      if (reconcileResult.action === 'updated' && reconcileResult.retainedAccountId) {
+        verifiedStatus = `SUB2API 已复用账号 #${reconcileResult.retainedAccountId}`;
+      } else {
+        await logWithOptions(`${logLabel}：授权码交换成功，正在创建 SUB2API 账号（名称：${accountName}）...`, 'info', options);
+        const createdAccount = await requestJson(origin, '/api/v1/admin/accounts', {
+          method: 'POST',
+          token,
+          timeoutMs: options.createTimeoutMs,
+          body: createPayload,
+        });
+        verifiedStatus = `SUB2API 已创建账号 #${createdAccount?.id || 'unknown'}`;
+      }
+
       await logWithOptions(verifiedStatus, 'ok', options);
       return {
         localhostUrl: callback.url,
@@ -1013,6 +1282,10 @@
       normalizeRedirectUri,
       normalizeSub2ApiGroupNames,
       parseLocalhostCallback,
+      listSub2ApiAccountsByEmail,
+      listSub2ApiErrorOpenAiOauthAccounts,
+      deleteSub2ApiAccount,
+      reconcileDuplicateOpenAiOauthAccounts,
       requestJson,
       resolveSub2ApiAccountPriority,
       resolveSub2ApiProxy,
