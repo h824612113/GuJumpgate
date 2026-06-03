@@ -11439,6 +11439,11 @@ function isHostedCheckoutGenericErrorFailure(error) {
   return /HOSTED_CHECKOUT_GENERIC_ERROR::|Things\s+don[’']?t\s+appear\s+to\s+be\s+working\s+at\s+the\s+moment|Sorry,\s*something\s+went\s+wrong\.?\s*Please\s+try\s+again/i.test(message);
 }
 
+function isPlusCheckoutUnauthorizedFailure(error) {
+  const message = getErrorMessage(error);
+  return /创建\s*Plus\s*Checkout\s*失败[:：][\s\S]*(?:HTTP\s*401|401\b|未授权|unauthorized)/i.test(message);
+}
+
 function isHostedCheckoutCardFallbackFailure(error) {
   const message = getErrorMessage(error);
   return /HOSTED_CHECKOUT_CARD_FALLBACK::|hosted checkout[\s\S]*(?:落到|进入).*(?:银行卡|card)[\s\S]*(?:分支|支付)|未进入\s*PayPal|未跳转到\s*PayPal/i.test(message);
@@ -11480,6 +11485,7 @@ function isPlusCheckoutRestartStep(step, stepExecutionKey = '', state = {}) {
 
 function isPlusCheckoutRestartRequiredFailure(error) {
   return !isPlusCheckoutNonFreeTrialFailure(error)
+    && !isPlusCheckoutUnauthorizedFailure(error)
     && !isHostedCheckoutGenericErrorFailure(error)
     && !isHostedCheckoutVerificationResendLimitFailure(error)
     && !isCloudCheckoutAlreadyPaidFailure(error);
@@ -14766,6 +14772,7 @@ const autoRunController = self.MultiPageBackgroundAutoRunController?.createAutoR
   isPhoneSmsPlatformRateLimitFailure,
   isPlusCheckoutNonFreeTrialFailure,
   isGpcTaskEndedFailure,
+  isPlusCheckoutUnauthorizedFailure,
   isHostedCheckoutGenericErrorFailure,
   isHostedCheckoutVerificationResendLimitFailure,
   isRestartCurrentAttemptError,

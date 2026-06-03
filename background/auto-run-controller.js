@@ -30,6 +30,7 @@
       isCloudCheckoutAlreadyPaidFailure,
       isGpcTaskEndedFailure,
       isHostedCheckoutGenericErrorFailure,
+      isPlusCheckoutUnauthorizedFailure,
       isHostedCheckoutVerificationResendLimitFailure,
       isPhoneSmsPlatformRateLimitFailure,
       isPlusCheckoutNonFreeTrialFailure,
@@ -236,7 +237,7 @@
       if (!message) {
         return false;
       }
-      return /STEP5_STALE_SIGNUP_VERIFICATION::|SIGNUP_IDENTITY_RATE_LIMIT::|SIGNUP_IDENTITY_PROVIDER_MISMATCH::|SIGNUP_ACCOUNT_DEACTIVATED::|SIGNUP_USER_ALREADY_EXISTS::|identity_provider_mismatch|account_deactivated|user_already_exists|email_in_use|already\s+(?:paid|subscribed)|没有免费试用资格|今日应付金额不是\s*0|等待注册身份提交后的页面跳转超时|注册身份提交后未能识别当前页面|注册身份提交后进入认证错误页|内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|did not respond in \d+s|Receiving end does not exist|message channel closed/i.test(message);
+      return /STEP5_STALE_SIGNUP_VERIFICATION::|SIGNUP_IDENTITY_RATE_LIMIT::|SIGNUP_IDENTITY_PROVIDER_MISMATCH::|SIGNUP_ACCOUNT_DEACTIVATED::|SIGNUP_USER_ALREADY_EXISTS::|identity_provider_mismatch|account_deactivated|user_already_exists|email_in_use|already\s+(?:paid|subscribed)|没有免费试用资格|今日应付金额不是\s*0|创建\s*Plus\s*Checkout\s*失败[:：][\s\S]*(?:HTTP\s*401|401\b|未授权|unauthorized)|等待注册身份提交后的页面跳转超时|注册身份提交后未能识别当前页面|注册身份提交后进入认证错误页|内容脚本\s+\d+(?:\.\d+)?\s*秒内未响应|did not respond in \d+s|Receiving end does not exist|message channel closed/i.test(message);
     }
 
     function isPhoneNumberSupplyExhaustedFailure(errorLike) {
@@ -802,6 +803,9 @@
             const blockedByGpcTaskEnded = typeof isGpcTaskEndedFailure === 'function'
               ? isGpcTaskEndedFailure(err)
               : /GPC_TASK_ENDED::/i.test(err?.message || String(err || ''));
+            const blockedByPlusCheckoutUnauthorized = typeof isPlusCheckoutUnauthorizedFailure === 'function'
+              ? isPlusCheckoutUnauthorizedFailure(err)
+              : /创建\s*Plus\s*Checkout\s*失败[:：][\s\S]*(?:HTTP\s*401|401\b|未授权|unauthorized)/i.test(err?.message || String(err || ''));
             const blockedByHostedCheckoutGenericError = typeof isHostedCheckoutGenericErrorFailure === 'function'
               ? isHostedCheckoutGenericErrorFailure(err)
               : /HOSTED_CHECKOUT_GENERIC_ERROR::/i.test(err?.message || String(err || ''));
@@ -850,6 +854,7 @@
               && !blockedByPhoneNoSupply
               && !blockedByPlusNonFreeTrial
               && !blockedByGpcTaskEnded
+              && !blockedByPlusCheckoutUnauthorized
               && !blockedByHostedCheckoutGenericError
               && !blockedByHostedCheckoutCardFallback
               && !blockedByHostedCheckoutVerificationResendLimit
@@ -867,6 +872,7 @@
               && !blockedByPhoneNoSupply
               && !blockedByPlusNonFreeTrial
               && !blockedByGpcTaskEnded
+              && !blockedByPlusCheckoutUnauthorized
               && !blockedByHostedCheckoutGenericError
               && !blockedByHostedCheckoutCardFallback
               && !blockedByHostedCheckoutVerificationResendLimit
@@ -1184,6 +1190,29 @@
                 targetRun < totalRuns
                   ? `第 ${targetRun}/${totalRuns} 轮因 GPC 任务结束提前结束，自动流程将继续下一轮。`
                   : `第 ${targetRun}/${totalRuns} 轮因 GPC 任务结束提前结束，已无后续轮次，本次自动运行结束。`,
+                'warn'
+              );
+              forceFreshTabsNextRun = true;
+              break;
+            }
+
+            if (blockedByPlusCheckoutUnauthorized) {
+              roundSummary.status = 'failed';
+              roundSummary.finalFailureReason = reason;
+              await setState({
+                autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
+              });
+              await appendRoundRecordIfNeeded('failed', reason, err);
+              cancelPendingCommands('当前轮因 Plus Checkout 创建返回 401 已终止。');
+              await broadcastStopToContentScripts();
+              await addLog(
+                `第 ${targetRun}/${totalRuns} 轮检测到 Plus Checkout 创建返回 401，本轮将直接失败并跳过剩余重试。`,
+                'warn'
+              );
+              await addLog(
+                targetRun < totalRuns
+                  ? `第 ${targetRun}/${totalRuns} 轮因 Plus Checkout 创建返回 401 提前结束，自动流程将继续下一轮。`
+                  : `第 ${targetRun}/${totalRuns} 轮因 Plus Checkout 创建返回 401 提前结束，已无后续轮次，本次自动运行结束。`,
                 'warn'
               );
               forceFreshTabsNextRun = true;
