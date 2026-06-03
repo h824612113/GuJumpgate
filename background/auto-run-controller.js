@@ -770,6 +770,7 @@
             await setState({
               autoRunRoundSummaries: serializeAutoRunRoundSummaries(totalRuns, roundSummaries),
             });
+            await appendRoundRecordIfNeeded('success');
             await addLog(`=== 第 ${targetRun}/${totalRuns} 轮完成（第 ${attemptRun} 次尝试成功）===`, 'ok');
             break;
           } catch (err) {

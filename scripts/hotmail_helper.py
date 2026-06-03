@@ -5,6 +5,8 @@ import imaplib
 import json
 import os
 import re
+import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -66,7 +68,11 @@ FETCH_LIMIT_DEFAULT = 5
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ACCOUNT_LOG_PATH = os.path.join(BASE_DIR, "data", "account-run-history.txt")
 ACCOUNT_RECORDS_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "account-run-history.json")
+AT_ACCOUNT_HISTORY_PATH = os.path.join(BASE_DIR, "data", "at-account-history.txt")
+AT_ACCOUNT_HISTORY_DAILY_DIR = os.path.join(BASE_DIR, "data", "at-account-history-daily")
+SUB2API_SESSION_EXPORT_DIR = os.path.join(BASE_DIR, "data", "sub2api-session-jsons")
 SUB2API_ERROR_REFRESH_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "sub2api-error-refresh-history.json")
+DAILY_SESSION_EXPORTS_DIR = os.path.join(BASE_DIR, "data", "session-daily-exports")
 ACCOUNT_RECORDS_LOCK = threading.Lock()
 
 
@@ -240,6 +246,71 @@ def save_local_cpa_json(file_path, content, directory_path=""):
     return str(target_path)
 
 
+def save_sub2api_export_json(file_name, content):
+    normalized_name = os.path.basename(str(file_name or "").strip())
+    normalized_content = str(content or "")
+    if not normalized_name:
+        raise RuntimeError("Missing fileName")
+    if not normalized_name.lower().endswith(".json"):
+        normalized_name += ".json"
+
+    os.makedirs(SUB2API_SESSION_EXPORT_DIR, exist_ok=True)
+    target_path = os.path.join(SUB2API_SESSION_EXPORT_DIR, normalized_name)
+    with open(target_path, "w", encoding="utf-8") as handle:
+        handle.write(normalized_content)
+        if not normalized_content.endswith("\n"):
+            handle.write("\n")
+    return target_path
+
+
+def sanitize_export_file_segment(value, fallback="chatgpt-session"):
+    normalized = re.sub(r"[\\/:*?\"<>|]+", "-", str(value or "").strip())
+    normalized = re.sub(r"\s+", "-", normalized)
+    normalized = re.sub(r"-{2,}", "-", normalized).strip("-").lower()
+    return normalized[:80] or fallback
+
+
+def normalize_daily_export_date(value):
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw):
+        return raw
+    return datetime.now().astimezone().strftime("%Y-%m-%d")
+
+
+def save_daily_session_exports(payload):
+    if not isinstance(payload, dict):
+        raise RuntimeError("Invalid daily session export payload")
+
+    date_key = normalize_daily_export_date(payload.get("date"))
+    account_key = sanitize_export_file_segment(payload.get("accountKey"), "chatgpt-session")
+    base_dir = os.path.join(DAILY_SESSION_EXPORTS_DIR, date_key, account_key)
+    os.makedirs(base_dir, exist_ok=True)
+
+    files = payload.get("files")
+    if not isinstance(files, dict):
+        raise RuntimeError("Missing daily session export files")
+
+    written_files = {}
+    for name, content in files.items():
+        normalized_name = os.path.basename(str(name or "").strip())
+        if not normalized_name:
+            continue
+        target_path = os.path.join(base_dir, normalized_name)
+        with open(target_path, "w", encoding="utf-8") as handle:
+            handle.write(str(content or ""))
+            if not str(content or "").endswith("\n"):
+                handle.write("\n")
+        written_files[normalized_name] = target_path
+
+    if not written_files:
+        raise RuntimeError("No daily session export file was written")
+
+    return {
+        "directoryPath": base_dir,
+        "files": written_files,
+    }
+
+
 def normalize_account_run_snapshot_record(record):
     if not isinstance(record, dict):
         return None
@@ -285,6 +356,7 @@ def normalize_account_run_snapshot_record(record):
         "failedStep": failed_step,
         "source": source,
         "autoRunContext": normalized_auto_run_context,
+        "plusAtModeEnabled": bool(record.get("plusAtModeEnabled")),
     }
 
 
@@ -335,7 +407,77 @@ def sync_account_run_records(payload):
         with open(ACCOUNT_RECORDS_SNAPSHOT_PATH, "w", encoding="utf-8") as handle:
             json.dump(normalized_payload, handle, ensure_ascii=False, indent=2)
             handle.write("\n")
+        at_success_records = [
+            item for item in normalized_payload.get("records", [])
+            if item.get("finalStatus") == "success" and item.get("plusAtModeEnabled")
+        ]
+        with open(AT_ACCOUNT_HISTORY_PATH, "w", encoding="utf-8") as handle:
+            for item in at_success_records:
+                finished_at = str(item.get("finishedAt") or "").strip()
+                email_addr = str(item.get("email") or "").strip()
+                password = str(item.get("password") or "").strip()
+                source = str(item.get("source") or "").strip() or "manual"
+                handle.write(f"{finished_at}\t{email_addr}\t{password}\t{source}\tAT 模式完成（第7步）\n")
+        os.makedirs(AT_ACCOUNT_HISTORY_DAILY_DIR, exist_ok=True)
+        for file_name in os.listdir(AT_ACCOUNT_HISTORY_DAILY_DIR):
+            if not file_name.endswith(".txt"):
+                continue
+            file_path = os.path.join(AT_ACCOUNT_HISTORY_DAILY_DIR, file_name)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+        grouped_at_records = {}
+        for item in at_success_records:
+            finished_at = str(item.get("finishedAt") or "").strip()
+            try:
+                daily_key = datetime.fromisoformat(finished_at.replace("Z", "+00:00")).astimezone().strftime("%Y-%m-%d")
+            except ValueError:
+                daily_key = datetime.now().astimezone().strftime("%Y-%m-%d")
+            grouped_at_records.setdefault(daily_key, []).append(item)
+        for daily_key, daily_records in grouped_at_records.items():
+            daily_file_path = os.path.join(AT_ACCOUNT_HISTORY_DAILY_DIR, f"{daily_key}.txt")
+            with open(daily_file_path, "w", encoding="utf-8") as handle:
+                for item in daily_records:
+                    finished_at = str(item.get("finishedAt") or "").strip()
+                    email_addr = str(item.get("email") or "").strip()
+                    password = str(item.get("password") or "").strip()
+                    source = str(item.get("source") or "").strip() or "manual"
+                    handle.write(f"{finished_at}\t{email_addr}\t{password}\t{source}\tAT 模式完成（第7步）\n")
     return ACCOUNT_RECORDS_SNAPSHOT_PATH
+
+
+def get_today_at_account_history_path():
+    daily_key = datetime.now().astimezone().strftime("%Y-%m-%d")
+    return os.path.join(AT_ACCOUNT_HISTORY_DAILY_DIR, f"{daily_key}.txt")
+
+
+def open_path_in_system(path):
+    normalized_path = str(path or "").strip()
+    if not normalized_path:
+        raise RuntimeError("Missing path")
+    if os.name == "nt":
+        os.startfile(normalized_path)
+        return
+    if sys.platform == "darwin":
+        subprocess.run(["open", normalized_path], check=True)
+        return
+    subprocess.run(["xdg-open", normalized_path], check=True)
+
+
+def open_at_account_history_file(target="daily"):
+    normalized_target = str(target or "daily").strip().lower()
+    os.makedirs(os.path.dirname(AT_ACCOUNT_HISTORY_PATH), exist_ok=True)
+    os.makedirs(AT_ACCOUNT_HISTORY_DAILY_DIR, exist_ok=True)
+
+    if normalized_target == "latest":
+        candidate_path = AT_ACCOUNT_HISTORY_PATH
+        fallback_path = os.path.dirname(AT_ACCOUNT_HISTORY_PATH)
+    else:
+        candidate_path = get_today_at_account_history_path()
+        fallback_path = AT_ACCOUNT_HISTORY_DAILY_DIR
+
+    target_path = candidate_path if os.path.exists(candidate_path) else fallback_path
+    open_path_in_system(target_path)
+    return target_path
 
 
 def normalize_sub2api_error_refresh_detail(detail):
@@ -1094,6 +1236,14 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
                 })
                 return
 
+            if request_path == "/open-at-account-file":
+                file_path = open_at_account_history_file(payload.get("target"))
+                json_response(self, 200, {
+                    "ok": True,
+                    "filePath": file_path,
+                })
+                return
+
             if request_path == "/sync-sub2api-error-refresh-records":
                 file_path = sync_sub2api_error_refresh_records(payload)
                 json_response(self, 200, {
@@ -1125,6 +1275,26 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
                 json_response(self, 200, {
                     "ok": True,
                     "filePath": file_path,
+                })
+                return
+
+            if request_path == "/save-sub2api-export-json":
+                file_path = save_sub2api_export_json(
+                    payload.get("fileName"),
+                    payload.get("content"),
+                )
+                json_response(self, 200, {
+                    "ok": True,
+                    "filePath": file_path,
+                })
+                return
+
+            if request_path == "/save-daily-session-exports":
+                result = save_daily_session_exports(payload)
+                json_response(self, 200, {
+                    "ok": True,
+                    "directoryPath": result["directoryPath"],
+                    "files": result["files"],
                 })
                 return
 
@@ -1185,6 +1355,9 @@ def main(argv=None):
     print(f"Hotmail helper listening on http://{host}:{port}", flush=True)
     print(f"Account log file: {ACCOUNT_LOG_PATH}", flush=True)
     print(f"Account snapshot file: {ACCOUNT_RECORDS_SNAPSHOT_PATH}", flush=True)
+    print(f"AT account file: {AT_ACCOUNT_HISTORY_PATH}", flush=True)
+    print(f"AT daily dir: {AT_ACCOUNT_HISTORY_DAILY_DIR}", flush=True)
+    print(f"SUB2API session dir: {SUB2API_SESSION_EXPORT_DIR}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

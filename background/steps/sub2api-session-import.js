@@ -14,11 +14,13 @@
   function createSub2ApiSessionImportExecutor(deps = {}) {
     const {
       addLog: rawAddLog = async () => {},
+      buildLocalHelperEndpoint = null,
       chrome,
       completeNodeFromBackground,
       ensureContentScriptReadyOnTabUntilStopped,
       getTabId,
       isTabAlive,
+      normalizeHotmailLocalBaseUrl = (value) => String(value || '').trim(),
       normalizeSub2ApiUrl = (value) => value,
       registerTab,
       sendTabMessageUntilStopped,
@@ -58,6 +60,16 @@
       return String(value || '').trim();
     }
 
+    function sanitizeFileSegment(value = '', fallback = 'chatgpt-session') {
+      const normalized = String(value || '')
+        .trim()
+        .replace(/[\\/:*?"<>|]+/g, '-')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-+|-+$/g, '');
+      return normalized || fallback;
+    }
+
     function resolveVisibleStep(state = {}) {
       const visibleStep = Math.floor(Number(state?.visibleStep) || 0);
       return visibleStep > 0 ? visibleStep : 10;
@@ -65,6 +77,70 @@
 
     function getErrorMessage(error) {
       return normalizeString(error?.message || error);
+    }
+
+    function formatLocalHelperFetchError(endpoint, helperBaseUrl, error) {
+      const originalMessage = normalizeString(error?.message) || 'Failed to fetch';
+      return `本地 helper 请求失败：无法连接 ${endpoint}。请检查本地 hotmail-helper 是否启动，并确认本地助手地址为 ${helperBaseUrl}。原始错误：${originalMessage}`;
+    }
+
+    async function saveLocalSub2ApiJsonCopy(state = {}, sessionState = {}, visibleStep = 10) {
+      const helperBaseUrl = normalizeHotmailLocalBaseUrl(state.hotmailLocalBaseUrl);
+      if (!helperBaseUrl) {
+        throw new Error('尚未配置本地助手地址，无法保留本地 SUB2API JSON。');
+      }
+
+      const api = getSub2ApiApi();
+      const exportPayload = await api.buildCodexSessionImportPayloadForExport({
+        ...state,
+        session: sessionState?.session,
+        accessToken: sessionState?.accessToken,
+      }, {
+        timeoutMs: 15000,
+      });
+      const warnings = Array.isArray(exportPayload?.warnings) ? exportPayload.warnings : [];
+      for (const warning of warnings) {
+        await addStepLog(visibleStep, `本地 SUB2API JSON 导出提示：${warning}`, 'warn');
+      }
+
+      const accountName = exportPayload?.payload?.accounts?.[0]?.name
+        || sessionState?.session?.user?.email
+        || state?.email
+        || '';
+      const fileName = `sub2api-${sanitizeFileSegment(accountName, 'chatgpt-session')}.json`;
+      const endpoint = typeof buildLocalHelperEndpoint === 'function'
+        ? buildLocalHelperEndpoint(helperBaseUrl, '/save-sub2api-export-json')
+        : new URL('/save-sub2api-export-json', `${helperBaseUrl.replace(/\/+$/, '')}/`).toString();
+
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            fileName,
+            content: `${JSON.stringify(exportPayload.payload, null, 2)}\n`,
+          }),
+        });
+      } catch (error) {
+        throw new Error(formatLocalHelperFetchError(endpoint, helperBaseUrl, error));
+      }
+
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        payload = {};
+      }
+
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(normalizeString(payload?.error) || `本地 helper 写入失败（HTTP ${response.status}）。`);
+      }
+
+      return normalizeString(payload?.filePath);
     }
 
     function isRetryableSessionImportError(error) {
@@ -295,6 +371,7 @@
       throwIfStopped();
       const visibleStep = resolveVisibleStep(state);
       const api = getSub2ApiApi();
+      let latestSessionState = null;
 
       const result = await runSessionImportWithRetries(async (attempt) => {
         const attemptSuffix = attempt > 1 ? `（第 ${attempt}/${SESSION_IMPORT_MAX_ATTEMPTS} 次尝试）` : '';
@@ -307,6 +384,7 @@
 
         await addStepLog(visibleStep, `正在读取当前 ChatGPT 登录会话${attemptSuffix}...`, 'info');
         const sessionState = await readCurrentChatGptSession(tab.id, visibleStep);
+        latestSessionState = sessionState;
         throwIfStopped();
 
         return api.importCurrentChatGptSession({
@@ -321,6 +399,18 @@
           importTimeoutMs: SESSION_IMPORT_TIMEOUT_MS,
         });
       }, visibleStep);
+
+      if (latestSessionState) {
+        try {
+          const localSub2ApiJsonFilePath = await saveLocalSub2ApiJsonCopy(state, latestSessionState, visibleStep);
+          if (localSub2ApiJsonFilePath) {
+            await addStepLog(visibleStep, `本地 SUB2API JSON 已保留：${localSub2ApiJsonFilePath}`, 'ok');
+            result.localSub2ApiJsonFilePath = localSub2ApiJsonFilePath;
+          }
+        } catch (error) {
+          await addStepLog(visibleStep, `本地保留 SUB2API JSON 失败：${getErrorMessage(error)}`, 'warn');
+        }
+      }
 
       await completeNodeFromBackground(state?.nodeId || 'sub2api-session-import', result);
     }

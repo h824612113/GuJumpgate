@@ -4,6 +4,7 @@ importScripts(
   'shared/source-registry.js',
   'shared/flow-capabilities.js',
   'shared/session-to-json-converter.js',
+  'shared/session-export-configs.js',
   'background/local-cli-proxy-api.js',
   'managed-alias-utils.js',
   'mail2925-utils.js',
@@ -803,7 +804,18 @@ function isPlusModeState(state = {}) {
 }
 
 function normalizePlusPaymentMethod(value = '') {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === PLUS_PAYMENT_METHOD_GPC_HELPER) {
+    return PLUS_PAYMENT_METHOD_GPC_HELPER;
+  }
+  if (normalized === PLUS_PAYMENT_METHOD_GOPAY) {
+    return PLUS_PAYMENT_METHOD_GOPAY;
+  }
   return PLUS_PAYMENT_METHOD_PAYPAL;
+}
+
+function normalizePlusPaymentMethodForRun(value = '') {
+  return normalizePlusPaymentMethod(value);
 }
 
 function normalizeGpcHelperPhoneMode(value = '') {
@@ -1099,6 +1111,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   codex2apiAdminKey: '',
   customPassword: '',
   plusModeEnabled: true,
+  plusAtModeEnabled: false,
   plusPaymentMethod: DEFAULT_PLUS_PAYMENT_METHOD,
   plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH,
   plusCheckoutMode: 'us_pp',
@@ -1184,6 +1197,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   phoneVerificationEnabled: false,
   phoneSignupReloginAfterBindEmailEnabled: false,
   phoneAutoReleaseOnStopEnabled: true,
+  markRegistrationAccountUsedOnManualStop: true,
   phoneSmsReuseEnabled: DEFAULT_HERO_SMS_REUSE_ENABLED,
   freePhoneReuseEnabled: true,
   freePhoneReuseAutoEnabled: true,
@@ -3440,7 +3454,7 @@ function normalizeHotmailLocalBaseUrl(rawValue = '') {
       return DEFAULT_HOTMAIL_LOCAL_BASE_URL;
     }
 
-    if (['/messages', '/code', '/clear', '/token'].includes(parsed.pathname)) {
+    if (['/messages', '/code', '/clear', '/token', '/save-auth-json', '/save-sub2api-export-json', '/save-daily-session-exports'].includes(parsed.pathname)) {
       parsed.pathname = '';
       parsed.search = '';
       parsed.hash = '';
@@ -3460,6 +3474,7 @@ function normalizeAccountRunHistoryHelperBaseUrl(rawValue = '') {
     const parsed = new URL(value);
     if ([
       '/append-account-log',
+      '/open-at-account-file',
       '/sync-account-run-records',
       '/sync-sub2api-error-refresh-records',
     ].includes(parsed.pathname)) {
@@ -3759,6 +3774,8 @@ function normalizePersistentSettingValue(key, value) {
     case 'sub2apiErrorRefreshEnabled':
       return Boolean(value);
     case 'ipProxyEnabled':
+      return Boolean(value);
+    case 'plusAtModeEnabled':
       return Boolean(value);
     case 'ipProxyService':
       return normalizeIpProxyProviderValue(value);
@@ -6152,6 +6169,11 @@ function isPendingHotmailVerificationCandidate(candidate) {
     && Boolean(candidate.refreshToken);
 }
 
+function isUsableHotmailRunAccount(candidate) {
+  return isAuthorizedHotmailRunAccount(candidate)
+    || isPendingHotmailVerificationCandidate(candidate);
+}
+
 function compareHotmailAccountAllocationPriority(left, right) {
   const leftUsedAt = Number(left?.lastUsedAt) || 0;
   const rightUsedAt = Number(right?.lastUsedAt) || 0;
@@ -6201,12 +6223,12 @@ async function ensureHotmailAccountForFlow(options = {}) {
       : false
   );
   const availableAccounts = accounts.filter((candidate) => (
-    isAuthorizedHotmailRunAccount(candidate)
+    isUsableHotmailRunAccount(candidate)
     && !excludedAccountIds.has(candidate.id)
     && !isAliasCapacityExhausted(candidate, state)
   ));
   const isReusableAuthorizedHotmailAccount = (account) => Boolean(account)
-    && account.status === 'authorized'
+    && ['authorized', 'pending'].includes(String(account.status || '').trim().toLowerCase())
     && Boolean(account.refreshToken);
 
   const orderedCandidates = [];
@@ -6235,7 +6257,7 @@ async function ensureHotmailAccountForFlow(options = {}) {
     if (!candidate) {
       continue;
     }
-    if (!isAuthorizedHotmailRunAccount(candidate) && !(allowUsedCurrent && isReusableAuthorizedHotmailAccount(candidate))) {
+    if (!isUsableHotmailRunAccount(candidate) && !(allowUsedCurrent && isReusableAuthorizedHotmailAccount(candidate))) {
       lastAllocationError = new Error(`Hotmail 账号 ${candidate.email || candidate.id} 尚未就绪，无法读取邮件。`);
       continue;
     }
@@ -6652,10 +6674,21 @@ async function verifyHotmailAccount(accountId) {
     throw new Error('未找到需要校验的 Hotmail 账号。');
   }
 
-  const result = await fetchHotmailMailboxMessages(account, ['INBOX']);
+  // Auto-run precheck only needs to validate that the token can access mailbox APIs.
+  // Avoid fetching message bodies here, which can stall for a long time on large inboxes.
+  const result = await requestHotmailLocalCode(account, {
+    maxAttempts: 1,
+    intervalMs: 0,
+    senderFilters: [],
+    subjectFilters: [],
+    requiredKeywords: [],
+    codePatterns: [],
+    excludeCodes: [],
+    filterAfterTimestamp: 0,
+  });
   return {
     account: result.account,
-    messageCount: result.mailboxResults[0]?.count || 0,
+    messageCount: result.message ? 1 : 0,
   };
 }
 
@@ -11453,7 +11486,7 @@ function isPlusCheckoutRestartRequiredFailure(error) {
 }
 
 function shouldSchedulePayPalCookieCleanupBeforeCheckoutCreate(nodeId, state = {}, error = null) {
-  if (normalizePlusPaymentMethodForRun(state?.plusPaymentMethod) !== PLUS_PAYMENT_METHOD_PAYPAL) {
+  if (normalizePlusPaymentMethod(state?.plusPaymentMethod) !== PLUS_PAYMENT_METHOD_PAYPAL) {
     return false;
   }
   const normalizedNodeId = String(nodeId || '').trim();
@@ -13513,6 +13546,7 @@ async function markRunningStepsStopped() {
 async function requestStop(options = {}) {
   const { logMessage = '已收到停止请求，正在取消当前操作...' } = options;
   const state = await getState();
+  const markAccountUsedOnStop = options?.markRegistrationAccountUsed === true;
   const runningNodes = getRunningNodeIds(state.nodeStatuses, state);
   const inferredStopNode = inferStoppedRecordNode(state);
   const timerPlan = getPendingAutoRunTimerPlan(state);
@@ -13623,6 +13657,17 @@ async function requestStop(options = {}) {
     };
     await setState(phoneStopStateUpdates);
     broadcastDataUpdate(phoneStopStateUpdates);
+  }
+
+  if (markAccountUsedOnStop && state?.markRegistrationAccountUsedOnManualStop !== false) {
+    try {
+      await markCurrentRegistrationAccountUsed(state, {
+        logPrefix: '手动停止流程',
+        level: 'warn',
+      });
+    } catch (markError) {
+      await addLog(`停止流程：标记当前账号已用失败。${getErrorMessage(markError)}`, 'warn');
+    }
   }
 
   if (!runningNodes.length && inferredStopNode) {
@@ -15145,9 +15190,6 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
     signupPhoneExcludedNumbersThisAttempt: [],
     whatsappPhoneVerificationRestartCount: 0,
   });
-  const normalizePlusPaymentMethodForRun = typeof normalizePlusPaymentMethod === 'function'
-    ? normalizePlusPaymentMethod
-    : (value) => (String(value || '').trim().toLowerCase() === 'gpc-helper' ? 'gpc-helper' : String(value || '').trim().toLowerCase());
   const plusPaymentMethodGpcHelper = typeof PLUS_PAYMENT_METHOD_GPC_HELPER === 'string'
     ? PLUS_PAYMENT_METHOD_GPC_HELPER
     : 'gpc-helper';
@@ -16220,11 +16262,13 @@ const plusReturnConfirmExecutor = self.MultiPageBackgroundPlusReturnConfirm?.cre
 });
 const sub2ApiSessionImportExecutor = self.MultiPageBackgroundSub2ApiSessionImport?.createSub2ApiSessionImportExecutor({
   addLog,
+  buildLocalHelperEndpoint: (baseUrl, path) => buildHotmailLocalEndpoint(baseUrl, path),
   chrome,
   completeNodeFromBackground,
   ensureContentScriptReadyOnTabUntilStopped,
   getTabId,
   isTabAlive,
+  normalizeHotmailLocalBaseUrl,
   normalizeSub2ApiUrl,
   registerTab,
   sendTabMessageUntilStopped,
@@ -16259,6 +16303,7 @@ const step10Executor = self.MultiPageBackgroundStep10?.createStep10Executor({
   chrome,
   closeConflictingTabsForSource,
   completeNodeFromBackground,
+  buildDailySessionExportBundle: self.MultiPageSessionExportConfigs?.buildDailyExportBundle,
   createLocalCliProxyApi: self.MultiPageBackgroundLocalCliProxyApi?.createLocalCliProxyApi,
   ensureContentScriptReadyOnTab,
   getState,

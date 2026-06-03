@@ -70,6 +70,12 @@
     { id: 7, order: 70, key: 'plus-checkout-billing', title: '等待 GPC 任务完成', sourceId: 'plus-checkout', driverId: 'content/plus-checkout', command: 'plus-checkout-billing' },
   ];
 
+  const PLUS_PAYPAL_AT_MODE_STEP_DEFINITIONS = [
+    ...NORMAL_PREFIX_STEP_DEFINITIONS.slice(0, 5),
+    { id: 6, order: 60, key: 'plus-checkout-create', title: '创建 Plus Checkout', sourceId: 'plus-checkout', driverId: 'content/plus-checkout', command: 'plus-checkout-create' },
+    { id: 7, order: 70, key: 'oauth-login', title: '刷新 OAuth 并登录', sourceId: 'openai-auth', driverId: 'content/signup-page', command: 'oauth-login' },
+  ];
+
   function isPhoneSignupReloginAfterBindEmailEnabled(options = {}) {
     return Boolean(options?.phoneSignupReloginAfterBindEmailEnabled);
   }
@@ -357,6 +363,10 @@
     return Boolean(options?.plusModeEnabled || options?.plusMode);
   }
 
+  function isPlusAtModeEnabled(options = {}) {
+    return Boolean(options?.plusAtModeEnabled || options?.atModeEnabled);
+  }
+
   function shouldTreatHostedCheckoutAsFinalStep(options = {}) {
     if (!isPlusModeEnabled(options)) {
       return false;
@@ -413,6 +423,9 @@
       return NORMAL_STEP_DEFINITIONS;
     }
     const paymentMethod = normalizePlusPaymentMethod(options?.plusPaymentMethod || options?.paymentMethod);
+    if (paymentMethod === PLUS_PAYMENT_METHOD_PAYPAL && isPlusAtModeEnabled(options)) {
+      return PLUS_PAYPAL_AT_MODE_STEP_DEFINITIONS;
+    }
     const plusAccountAccessStrategy = normalizePlusAccountAccessStrategy(options?.plusAccountAccessStrategy);
     if (shouldUseSmsOauthPhoneFlow(options)) {
       return PLUS_PAYPAL_SMS_OAUTH_STEP_DEFINITIONS;

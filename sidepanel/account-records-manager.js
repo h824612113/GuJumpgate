@@ -309,7 +309,9 @@
         return String(record.displaySummary || '').trim();
       }
       if (status === 'success') {
-        return '流程完成';
+        return Boolean(record.plusAtModeEnabled)
+          ? 'AT 模式完成（第 7 步）'
+          : '流程完成';
       }
       if (status === 'running') {
         return '正在运行';

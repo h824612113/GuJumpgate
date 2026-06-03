@@ -1,0 +1,16 @@
+{
+  "name": "gpt-session-to-cpa-and-sub2api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "export:configs": "node scripts/export-configs.mjs",
+    "export:sub2api": "node scripts/export-sub2api.mjs",
+    "test": "node --test tests/*.test.mjs"
+  },
+  "bin": {
+    "gpt-session-export-configs": "scripts/export-configs.mjs",
+    "gpt-session-export-sub2api": "scripts/export-sub2api.mjs"
+  },
+  "license": "MIT"
+}

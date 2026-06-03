@@ -388,6 +388,21 @@
           <span class="setting-caption" id="plus-payment-method-caption">PayPal 订阅链路</span>
         </div>
       </div>
+      <div class="data-row" id="row-plus-at-mode" style="display:none;">
+        <span class="data-label">AT 模式</span>
+        <div class="data-inline">
+          <label class="toggle-switch" for="input-plus-at-mode-enabled" title="启用后 PayPal 链路只执行到第 7 步：刷新 OAuth 并登录">
+            <input type="checkbox" id="input-plus-at-mode-enabled" />
+            <span class="toggle-switch-track" aria-hidden="true">
+              <span class="toggle-switch-thumb"></span>
+            </span>
+            <span>只跑到第 7 步</span>
+          </label>
+          <button id="btn-open-at-daily-file" class="btn btn-outline btn-sm data-inline-btn" type="button">打开当日AT</button>
+          <button id="btn-open-at-history-file" class="btn btn-outline btn-sm data-inline-btn" type="button">打开AT总文件</button>
+          <span class="setting-caption">完成 PayPal 注册并重新登录后，当前轮直接结束并进入下一轮</span>
+        </div>
+      </div>
       <div class="data-row" id="row-paypal-account" style="display:none;">
         <span class="data-label">PayPal 账号</span>
         <div class="data-inline">

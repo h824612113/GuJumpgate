@@ -1979,6 +1979,9 @@
       const provider = normalizePhoneSmsProvider(rawProvider);
       const rawCountryId = record.countryId ?? record.country;
       const fallbackCountryId = provider === PHONE_SMS_PROVIDER_FIVE_SIM ? 'england' : HERO_SMS_COUNTRY_ID;
+      const inferredHeroCountry = provider === PHONE_SMS_PROVIDER_FIVE_SIM
+        ? null
+        : inferHeroSmsCountryFromPhoneNumber(phoneNumber);
       const expiresAt = normalizeTimestampMs(record.expiresAt);
       const serviceCode = String(
         record.serviceCode
@@ -2000,13 +2003,40 @@
                 ))
         )
       ).trim();
-      const countryId = provider === PHONE_SMS_PROVIDER_FIVE_SIM
+      let countryId = provider === PHONE_SMS_PROVIDER_FIVE_SIM
         ? normalizeFiveSimCountryId(record.countryCode ?? rawCountryId, fallbackCountryId)
         : (
           provider === PHONE_SMS_PROVIDER_NEXSMS
             ? normalizeNexSmsCountryId(rawCountryId, 0)
             : normalizeCountryId(rawCountryId, fallbackCountryId)
         );
+      if (
+        provider === PHONE_SMS_PROVIDER_CHATGPT_API
+        && inferredHeroCountry?.id
+        && (
+          !Number.isFinite(Number(countryId))
+          || Number(countryId) <= 0
+          || (
+            Number(countryId) === HERO_SMS_COUNTRY_ID
+            && Number(inferredHeroCountry.id) !== HERO_SMS_COUNTRY_ID
+          )
+        )
+      ) {
+        countryId = inferredHeroCountry.id;
+      }
+      const normalizedCountryLabel = (
+        provider === PHONE_SMS_PROVIDER_CHATGPT_API
+        && inferredHeroCountry?.label
+        && (
+          !countryLabel
+          || (
+            Number(countryId) === Number(inferredHeroCountry.id)
+            && countryLabel.toLowerCase() !== String(inferredHeroCountry.label || '').trim().toLowerCase()
+          )
+        )
+      )
+        ? inferredHeroCountry.label
+        : countryLabel;
       return {
         activationId,
         phoneNumber,
@@ -2014,7 +2044,7 @@
         serviceCode,
         countryId,
         ...(provider === PHONE_SMS_PROVIDER_FIVE_SIM ? { countryCode: countryId } : {}),
-        ...(countryLabel ? { countryLabel } : {}),
+        ...(normalizedCountryLabel ? { countryLabel: normalizedCountryLabel } : {}),
         successfulUses: normalizeUseCount(record.successfulUses),
         maxUses: Math.max(1, Math.floor(Number(record.maxUses) || DEFAULT_PHONE_NUMBER_MAX_USES)),
         ...(expiresAt > 0 ? { expiresAt } : {}),
@@ -3083,13 +3113,23 @@
       const text = describeHeroSmsPayload(payload);
       const accessNumberMatch = text.match(/^ACCESS_NUMBER:([^:]+):(.+)$/i);
       if (accessNumberMatch) {
+          const accessPhoneNumber = String(accessNumberMatch[2] || '').trim();
+          const inferredCountry = (
+            normalizedFallback?.provider || PHONE_SMS_PROVIDER_HERO
+          ) === PHONE_SMS_PROVIDER_FIVE_SIM
+            ? inferFiveSimCountryFromPhoneNumber(accessPhoneNumber)
+            : inferHeroSmsCountryFromPhoneNumber(accessPhoneNumber);
           return {
             activationId: String(accessNumberMatch[1] || '').trim(),
-            phoneNumber: String(accessNumberMatch[2] || '').trim(),
+            phoneNumber: accessPhoneNumber,
             provider: normalizedFallback?.provider || PHONE_SMS_PROVIDER_HERO,
             serviceCode: normalizedFallback?.serviceCode || HERO_SMS_SERVICE_CODE,
-            countryId: normalizedFallback?.countryId || HERO_SMS_COUNTRY_ID,
-            ...(normalizedFallback?.countryLabel ? { countryLabel: normalizedFallback.countryLabel } : {}),
+            countryId: normalizedFallback?.countryId || inferredCountry?.id || HERO_SMS_COUNTRY_ID,
+            ...(
+              normalizedFallback?.countryLabel || inferredCountry?.label
+                ? { countryLabel: normalizedFallback?.countryLabel || inferredCountry?.label }
+                : {}
+            ),
             successfulUses: normalizedFallback?.successfulUses ?? 0,
             maxUses: normalizedFallback?.maxUses ?? DEFAULT_PHONE_NUMBER_MAX_USES,
             ...(normalizedFallback?.statusAction ? { statusAction: normalizedFallback.statusAction } : {}),

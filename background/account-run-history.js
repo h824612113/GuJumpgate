@@ -431,6 +431,7 @@
         source,
         autoRunContext: source === 'auto' ? autoRunContext : null,
         plusModeEnabled: Boolean(record.plusModeEnabled),
+        plusAtModeEnabled: Boolean(record.plusAtModeEnabled),
         contributionMode: Boolean(record.contributionMode),
       };
     }
@@ -526,6 +527,7 @@
         source,
         autoRunContext,
         plusModeEnabled: Boolean(state.plusModeEnabled),
+        plusAtModeEnabled: Boolean(state.plusAtModeEnabled),
         contributionMode: Boolean(state.contributionMode),
       };
     }

@@ -5,6 +5,7 @@
     const {
       addLog,
       buildLocalHelperEndpoint = null,
+      buildDailySessionExportBundle = null,
       chrome,
       closeConflictingTabsForSource,
       completeNodeFromBackground,
@@ -102,6 +103,188 @@
     function formatLocalHelperFetchError(endpoint, helperBaseUrl, error) {
       const originalMessage = normalizeString(error?.message) || 'Failed to fetch';
       return `本地 helper 请求失败：无法连接 ${endpoint}。请检查本地 hotmail-helper 是否启动（运行 start-hotmail-helper.bat），并确认侧边栏“本地助手地址”为 ${helperBaseUrl}。原始错误：${originalMessage}`;
+    }
+
+    async function readChatGptSessionExportDataFromTab(tabId, platformVerifyStep) {
+      const numericTabId = Number(tabId) || 0;
+      if (!numericTabId || !chrome?.scripting?.executeScript) {
+        throw new Error(`步骤 ${platformVerifyStep}：缺少可读取 ChatGPT 会话的标签页。`);
+      }
+      const [{ result } = {}] = await chrome.scripting.executeScript({
+        target: { tabId: numericTabId },
+        func: async () => {
+          const response = await fetch('/api/auth/session', { credentials: 'include' });
+          const session = await response.json().catch(() => ({}));
+          return {
+            ok: response.ok,
+            status: response.status,
+            session,
+            accessToken: String(session?.accessToken || '').trim(),
+          };
+        },
+      });
+      if (!result?.ok && !result?.accessToken) {
+        throw new Error(`步骤 ${platformVerifyStep}：当前页面未返回可用 SESSION（HTTP ${result?.status || 'unknown'}）。`);
+      }
+      if (!result?.accessToken) {
+        throw new Error(`步骤 ${platformVerifyStep}：当前 SESSION 中没有 accessToken。`);
+      }
+      return {
+        session: result.session && typeof result.session === 'object' ? result.session : {},
+        accessToken: result.accessToken,
+      };
+    }
+
+    async function resolveDailySessionExportState(platformVerifyStep) {
+      const knownTabIds = [];
+      if (typeof getTabId === 'function') {
+        knownTabIds.push(Number(await getTabId('chatgpt').catch(() => 0)) || 0);
+        knownTabIds.push(Number(await getTabId('plus-checkout').catch(() => 0)) || 0);
+      }
+
+      for (const tabId of knownTabIds.filter(Boolean)) {
+        try {
+          if (typeof isTabAlive === 'function' && !(await isTabAlive(tabId))) {
+            continue;
+          }
+          return await readChatGptSessionExportDataFromTab(tabId, platformVerifyStep);
+        } catch (_error) {
+          // Fall back to scanning tabs.
+        }
+      }
+
+      const tabs = await chrome.tabs.query({}).catch(() => []);
+      const candidates = tabs.filter((tab) => {
+        if (!Number.isInteger(tab?.id)) {
+          return false;
+        }
+        try {
+          const parsed = new URL(String(tab.url || ''));
+          const hostname = String(parsed.hostname || '').trim().toLowerCase();
+          return /(^|\.)chatgpt\.com$/.test(hostname)
+            || hostname === 'chat.openai.com'
+            || /(^|\.)openai\.com$/.test(hostname);
+        } catch {
+          return false;
+        }
+      });
+
+      for (const tab of candidates) {
+        try {
+          return await readChatGptSessionExportDataFromTab(tab.id, platformVerifyStep);
+        } catch (_error) {
+          // Try next candidate.
+        }
+      }
+
+      throw new Error(`步骤 ${platformVerifyStep}：未找到可读取 ChatGPT 会话的已登录标签页。`);
+    }
+
+    async function saveDailySessionExportsViaHelper(helperBaseUrl, payload) {
+      const endpoint = typeof buildLocalHelperEndpoint === 'function'
+        ? buildLocalHelperEndpoint(helperBaseUrl, '/save-daily-session-exports')
+        : new URL('/save-daily-session-exports', `${helperBaseUrl.replace(/\/+$/, '')}/`).toString();
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+      } catch (error) {
+        throw new Error(formatLocalHelperFetchError(endpoint, helperBaseUrl, error));
+      }
+
+      let result = {};
+      try {
+        result = await response.json();
+      } catch {
+        result = {};
+      }
+
+      if (!response.ok || result?.ok === false) {
+        throw new Error(normalizeString(result?.error) || `本地 helper 写入每日导出失败（HTTP ${response.status}）。`);
+      }
+
+      return result;
+    }
+
+    async function exportDailySessionArtifactsAfterPlatformVerify(state = {}, platformVerifyStep = 10) {
+      if (typeof buildDailySessionExportBundle !== 'function') {
+        return null;
+      }
+      const helperBaseUrl = normalizeHotmailLocalBaseUrl(state.hotmailLocalBaseUrl);
+      if (!helperBaseUrl) {
+        await addStepLog(platformVerifyStep, '每日导出已跳过：未配置本地助手地址。', 'warn');
+        return null;
+      }
+
+      await addStepLog(platformVerifyStep, `每日导出启动：准备从已登录 ChatGPT 页面读取 session，并写入 ${helperBaseUrl}。`, 'info');
+      const sessionState = await resolveDailySessionExportState(platformVerifyStep);
+      await addStepLog(
+        platformVerifyStep,
+        `每日导出：已读取 session，邮箱=${normalizeString(sessionState?.session?.user?.email || sessionState?.session?.email || '') || '(未知)'}。`,
+        'info'
+      );
+      const bundle = buildDailySessionExportBundle(sessionState.session, {
+        now: new Date(),
+        sourceName: `platform-verify-step-${platformVerifyStep}`,
+      });
+      const now = new Date();
+      const dateKey = [
+        now.getFullYear(),
+        String(now.getMonth() + 1).padStart(2, '0'),
+        String(now.getDate()).padStart(2, '0'),
+      ].join('-');
+      const helperResult = await saveDailySessionExportsViaHelper(helperBaseUrl, {
+        date: dateKey,
+        accountKey: bundle.accountKey,
+        files: {
+          'session.json': JSON.stringify(sessionState.session, null, 2),
+          'cpa.json': JSON.stringify(bundle.cpaDocument, null, 2),
+          'sub2api.json': JSON.stringify(bundle.sub2apiDocument, null, 2),
+        },
+      });
+
+      for (const warning of bundle.warnings || []) {
+        await addStepLog(platformVerifyStep, `每日导出提示：${warning}`, 'warn');
+      }
+
+      await addStepLog(
+        platformVerifyStep,
+        `已归档 session / CPA / SUB2API 到 ${normalizeString(helperResult?.directoryPath) || '当日目录'}`,
+        'ok'
+      );
+
+      return {
+        directoryPath: normalizeString(helperResult?.directoryPath),
+        files: helperResult?.files && typeof helperResult.files === 'object' ? helperResult.files : {},
+        sessionEmail: bundle.email || '',
+      };
+    }
+
+    function startDailySessionExportJob(state = {}, platformVerifyStep = 10) {
+      if (typeof buildDailySessionExportBundle !== 'function') {
+        return null;
+      }
+      void (async () => {
+        try {
+          await addStepLog(platformVerifyStep, '已启动每日导出后台任务。', 'info');
+          await exportDailySessionArtifactsAfterPlatformVerify(state, platformVerifyStep);
+        } catch (error) {
+          await addStepLog(platformVerifyStep, `每日导出失败：${normalizeString(error?.message) || 'unknown error'}`, 'warn');
+        }
+      })();
+      return true;
+    }
+
+    async function completePlatformVerifyNode(state, payload, platformVerifyStep) {
+      await completeNodeFromBackground(state?.nodeId || 'platform-verify', {
+        ...(payload || {}),
+      });
     }
 
     function parseLocalhostCallback(rawUrl, platformVerifyStep = 10) {
@@ -315,6 +498,8 @@
         ...(state || {}),
         ...(latestState || {}),
       };
+      const platformVerifyStep = resolvePlatformVerifyStep(effectiveState);
+      startDailySessionExportJob(effectiveState, platformVerifyStep);
 
       if (getPanelMode(effectiveState) === 'local-cpa-json') {
         return executeLocalCpaJsonStep10(effectiveState);
@@ -344,10 +529,10 @@
 
       if (shouldBypassStep9ForLocalCpa(state)) {
         await addStepLog(platformVerifyStep, '检测到本地 CPA，且当前策略为“跳过平台回调验证”，本轮不再重复提交回调地址。', 'info');
-        await completeNodeFromBackground(state?.nodeId || 'platform-verify', {
+        await completePlatformVerifyNode(state, {
           localhostUrl: state.localhostUrl,
           verifiedStatus: 'local-auto',
-        });
+        }, platformVerifyStep);
         return;
       }
 
@@ -377,10 +562,10 @@
           || normalizeString(result?.status_message)
           || 'CPA 已通过接口提交回调';
         await addStepLog(platformVerifyStep, verifiedStatus, 'ok');
-        await completeNodeFromBackground(state?.nodeId || 'platform-verify', {
+        await completePlatformVerifyNode(state, {
           localhostUrl: callback.url,
           verifiedStatus,
-        });
+        }, platformVerifyStep);
       } catch (error) {
         const reason = normalizeString(error?.message) || 'unknown error';
         await addStepLog(platformVerifyStep, `CPA 接口提交失败：${reason}`, 'error');
@@ -435,11 +620,11 @@
       const saved = await saveLocalCpaJsonArtifactViaHelper(helperBaseUrl, artifact);
       const verifiedStatus = `本地CPA JSON 有RT 已导出：${saved.filePath}`;
       await addStepLog(platformVerifyStep, verifiedStatus, 'ok');
-      await completeNodeFromBackground(state?.nodeId || 'platform-verify', {
+      await completePlatformVerifyNode(state, {
         localhostUrl: callback.url,
         verifiedStatus,
         localCpaJsonFilePath: saved.filePath,
-      });
+      }, platformVerifyStep);
     }
 
     async function executeCodex2ApiStep10(state) {
@@ -481,10 +666,10 @@
 
       const verifiedStatus = normalizeString(result?.message) || 'Codex2API OAuth 账号添加成功';
       await addStepLog(platformVerifyStep, verifiedStatus, 'ok');
-      await completeNodeFromBackground(state?.nodeId || 'platform-verify', {
+      await completePlatformVerifyNode(state, {
         localhostUrl: callback.url,
         verifiedStatus,
-      });
+      }, platformVerifyStep);
     }
 
     async function executeSub2ApiStep10(state) {
@@ -526,7 +711,7 @@
             logOptions: { step: visibleStep, stepKey: 'platform-verify' },
             timeoutMs: SUB2API_STEP9_RESPONSE_TIMEOUT_MS,
           });
-          await completeNodeFromBackground(state?.nodeId || 'platform-verify', result);
+          await completePlatformVerifyNode(state, result, platformVerifyStep);
           return;
         } catch (error) {
           lastError = error;

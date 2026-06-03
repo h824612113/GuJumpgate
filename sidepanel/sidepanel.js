@@ -207,6 +207,10 @@ const inputPlusCheckoutModeUs = document.getElementById('input-plus-checkout-mod
 const inputPlusCheckoutModeJp = document.getElementById('input-plus-checkout-mode-jp');
 const rowPlusPaymentMethod = document.getElementById('row-plus-payment-method');
 const selectPlusPaymentMethod = document.getElementById('select-plus-payment-method');
+const rowPlusAtMode = document.getElementById('row-plus-at-mode');
+const inputPlusAtModeEnabled = document.getElementById('input-plus-at-mode-enabled');
+const btnOpenAtDailyFile = document.getElementById('btn-open-at-daily-file');
+const btnOpenAtHistoryFile = document.getElementById('btn-open-at-history-file');
 const rowPayPalAccount = document.getElementById('row-paypal-account');
 const selectPayPalAccount = document.getElementById('select-paypal-account');
 const payPalAccountPickerRoot = document.getElementById('paypal-account-picker');
@@ -692,6 +696,7 @@ let localPlusCheckoutProfiles = {
   [PLUS_CHECKOUT_MODE_JP_PP]: null,
 };
 let currentPlusModeEnabled = false;
+let currentPlusAtModeEnabled = false;
 let currentPlusPaymentMethod = DEFAULT_PLUS_PAYMENT_METHOD;
 let currentPlusAccountAccessStrategy = PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH;
 let currentSignupMethod = DEFAULT_SIGNUP_METHOD;
@@ -717,12 +722,14 @@ let nexSmsCountrySelectionOrder = [];
 let nexSmsCountryMenuSearchKeyword = '';
 const nexSmsCountrySearchTextById = new Map();
 let stepDefinitions = getStepDefinitionsForMode(false, {
+  plusAtModeEnabled: currentPlusAtModeEnabled,
   plusPaymentMethod: currentPlusPaymentMethod,
   plusAccountAccessStrategy: currentPlusAccountAccessStrategy,
   signupMethod: currentSignupMethod,
   phoneSignupReloginAfterBindEmailEnabled: currentPhoneSignupReloginAfterBindEmailEnabled,
 });
 let workflowNodes = getWorkflowNodesForMode(false, {
+  plusAtModeEnabled: currentPlusAtModeEnabled,
   plusPaymentMethod: currentPlusPaymentMethod,
   plusAccountAccessStrategy: currentPlusAccountAccessStrategy,
   signupMethod: currentSignupMethod,
@@ -1026,6 +1033,9 @@ function getStepDefinitionsForMode(plusModeEnabled = false, options = {}) {
   const rawSignupMethod = typeof options === 'string'
     ? currentSignupMethod
     : (options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const plusAtModeEnabled = typeof options === 'string'
+    ? currentPlusAtModeEnabled
+    : Boolean(options.plusAtModeEnabled ?? currentPlusAtModeEnabled);
   const phoneSignupReloginAfterBindEmailEnabled = typeof options === 'string'
     ? currentPhoneSignupReloginAfterBindEmailEnabled
     : Boolean(options.phoneSignupReloginAfterBindEmailEnabled ?? currentPhoneSignupReloginAfterBindEmailEnabled);
@@ -1035,6 +1045,7 @@ function getStepDefinitionsForMode(plusModeEnabled = false, options = {}) {
   const requestOptions = {
     activeFlowId: String(activeFlowId || '').trim().toLowerCase() || defaultFlowId,
     plusModeEnabled,
+    plusAtModeEnabled,
     plusPaymentMethod: normalizePlusPaymentMethod(rawPaymentMethod),
     signupMethod: normalizeSignupMethod(rawSignupMethod),
     phoneSignupReloginAfterBindEmailEnabled,
@@ -1072,6 +1083,9 @@ function getWorkflowNodesForMode(plusModeEnabled = false, options = {}) {
   const rawSignupMethod = typeof options === 'string'
     ? currentSignupMethod
     : (options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const plusAtModeEnabled = typeof options === 'string'
+    ? currentPlusAtModeEnabled
+    : Boolean(options.plusAtModeEnabled ?? currentPlusAtModeEnabled);
   const phoneSignupReloginAfterBindEmailEnabled = typeof options === 'string'
     ? currentPhoneSignupReloginAfterBindEmailEnabled
     : Boolean(options.phoneSignupReloginAfterBindEmailEnabled ?? currentPhoneSignupReloginAfterBindEmailEnabled);
@@ -1081,6 +1095,7 @@ function getWorkflowNodesForMode(plusModeEnabled = false, options = {}) {
   const requestOptions = {
     activeFlowId: String(activeFlowId || '').trim().toLowerCase() || defaultFlowId,
     plusModeEnabled,
+    plusAtModeEnabled,
     plusPaymentMethod: normalizePlusPaymentMethod(rawPaymentMethod),
     signupMethod: normalizeSignupMethod(rawSignupMethod),
     phoneSignupReloginAfterBindEmailEnabled,
@@ -1157,6 +1172,9 @@ function rebuildStepDefinitionState(plusModeEnabled = false, options = {}) {
   const rawSignupMethod = typeof options === 'string'
     ? currentSignupMethod
     : (options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const nextPlusAtModeEnabled = typeof options === 'string'
+    ? currentPlusAtModeEnabled
+    : Boolean(options.plusAtModeEnabled ?? currentPlusAtModeEnabled);
   const phoneSignupReloginAfterBindEmailEnabled = typeof options === 'string'
     ? currentPhoneSignupReloginAfterBindEmailEnabled
     : Boolean(options.phoneSignupReloginAfterBindEmailEnabled ?? currentPhoneSignupReloginAfterBindEmailEnabled);
@@ -1174,10 +1192,12 @@ function rebuildStepDefinitionState(plusModeEnabled = false, options = {}) {
   currentPlusPaymentMethod = normalizePlusPaymentMethod(rawPaymentMethod);
   currentPlusAccountAccessStrategy = normalizeAccountAccessStrategySafe(rawAccountAccessStrategy);
   currentSignupMethod = normalizeSignupMethod(rawSignupMethod);
+  currentPlusAtModeEnabled = nextPlusAtModeEnabled;
   currentPhoneSignupReloginAfterBindEmailEnabled = phoneSignupReloginAfterBindEmailEnabled;
   stepDefinitions = getStepDefinitionsForMode(currentPlusModeEnabled, {
     activeFlowId: options?.activeFlowId,
     panelMode: options?.panelMode,
+    plusAtModeEnabled: currentPlusAtModeEnabled,
     plusPaymentMethod: currentPlusPaymentMethod,
     plusAccountAccessStrategy: currentPlusAccountAccessStrategy,
     signupMethod: currentSignupMethod,
@@ -1187,6 +1207,7 @@ function rebuildStepDefinitionState(plusModeEnabled = false, options = {}) {
     ? getWorkflowNodesForMode(currentPlusModeEnabled, {
       activeFlowId: options?.activeFlowId,
       panelMode: options?.panelMode,
+      plusAtModeEnabled: currentPlusAtModeEnabled,
       plusPaymentMethod: currentPlusPaymentMethod,
       plusAccountAccessStrategy: currentPlusAccountAccessStrategy,
       signupMethod: currentSignupMethod,
@@ -5264,6 +5285,9 @@ function collectSettingsPayload() {
     phoneSignupReloginAfterBindEmailEnabled: typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail
       ? Boolean(inputPhoneSignupReloginAfterBindEmail.checked)
       : false,
+    plusAtModeEnabled: typeof inputPlusAtModeEnabled !== 'undefined' && inputPlusAtModeEnabled
+      ? Boolean(inputPlusAtModeEnabled.checked)
+      : false,
     phoneSmsProvider: phoneSmsProviderValue,
     phoneSmsProviderOrder: phoneSmsProviderOrderValue,
     verificationResendCount: normalizeVerificationResendCount(
@@ -5383,6 +5407,7 @@ function normalizeAccountRunHistoryHelperBaseUrlValue(value = '') {
 
     if ([
       '/append-account-log',
+      '/open-at-account-file',
       '/sync-account-run-records',
       '/sync-sub2api-error-refresh-records',
     ].includes(parsed.pathname)) {
@@ -5395,6 +5420,41 @@ function normalizeAccountRunHistoryHelperBaseUrlValue(value = '') {
   } catch {
     return DEFAULT_ACCOUNT_RUN_HISTORY_HELPER_BASE_URL;
   }
+}
+
+async function openAtAccountHistoryFile(target = 'daily') {
+  const helperBaseUrl = normalizeAccountRunHistoryHelperBaseUrlValue(
+    inputAccountRunHistoryHelperBaseUrl?.value || latestState?.accountRunHistoryHelperBaseUrl
+  );
+  const endpoint = `${helperBaseUrl.replace(/\/+$/g, '')}/open-at-account-file`;
+  let response;
+  try {
+    response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify({
+        target: String(target || 'daily').trim().toLowerCase() || 'daily',
+      }),
+    });
+  } catch (error) {
+    throw new Error(`打开 AT 文件失败：无法连接本地 helper（${error?.message || error}）`);
+  }
+
+  let payload = null;
+  try {
+    payload = await response.json();
+  } catch (error) {
+    throw new Error(`打开 AT 文件失败：本地 helper 返回了无法解析的响应（${error?.message || error}）`);
+  }
+
+  if (!response.ok || payload?.ok === false) {
+    throw new Error(payload?.error || `打开 AT 文件失败：HTTP ${response.status}`);
+  }
+
+  return String(payload?.filePath || '').trim();
 }
 
 
@@ -10829,12 +10889,16 @@ function updatePlusModeUI() {
       : latestState?.gopayHelperLocalSmsHelperEnabled
   );
   const selectedMethod = method;
+  const showPlusAtMode = enabled && selectedMethod === paypalValue;
   const gpcRowsVisible = enabled && selectedMethod === gpcValue;
   const canShowGpcModeSelector = gpcRowsVisible;
   const localSmsControlsVisible = gpcRowsVisible && !isGpcAutoMode;
   const effectiveLocalSmsEnabled = !isGpcAutoMode && localSmsEnabled;
   if (typeof rowPlusMode !== 'undefined' && rowPlusMode) {
     rowPlusMode.style.display = supportsPlusMode ? '' : 'none';
+  }
+  if (typeof rowPlusAtMode !== 'undefined' && rowPlusAtMode) {
+    rowPlusAtMode.style.display = showPlusAtMode ? '' : 'none';
   }
   const checkoutModeSwitchVisible = supportsPlusMode && enabled && selectedMethod === paypalValue;
   if (plusCheckoutModeSwitchGroup) {
@@ -11753,6 +11817,12 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
       : (typeof latestState !== 'undefined' ? latestState?.plusAccountAccessStrategy : ''))
     || defaultAccountAccessStrategy;
   const nextSignupMethod = normalizeSignupMethod(options.signupMethod || currentSignupMethod || DEFAULT_SIGNUP_METHOD);
+  const nextPlusAtModeEnabled = Boolean(
+    options.plusAtModeEnabled
+      ?? (typeof inputPlusAtModeEnabled !== 'undefined' && inputPlusAtModeEnabled
+        ? inputPlusAtModeEnabled.checked
+        : currentPlusAtModeEnabled)
+  );
   const nextPhoneSignupReloginAfterBindEmailEnabled = Boolean(
     options.phoneSignupReloginAfterBindEmailEnabled
       ?? (typeof inputPhoneSignupReloginAfterBindEmail !== 'undefined' && inputPhoneSignupReloginAfterBindEmail
@@ -11797,6 +11867,7 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
   const paymentTitleChanged = Boolean(nextPlusModeEnabled && currentPaymentStep && nextPaymentTitle && currentPaymentStep.title !== nextPaymentTitle);
   const shouldRender = Boolean(options.render)
     || nextPlusModeEnabled !== currentPlusModeEnabled
+    || nextPlusAtModeEnabled !== currentPlusAtModeEnabled
     || nextPaymentMethod !== currentPlusPaymentMethod
     || nextAccountAccessStrategy !== currentPlusAccountAccessStrategy
     || nextSignupMethod !== currentSignupMethod
@@ -11810,6 +11881,7 @@ function syncStepDefinitionsForMode(plusModeEnabled = false, plusPaymentMethodOr
   rebuildStepDefinitionState(nextPlusModeEnabled, {
     activeFlowId: nextActiveFlowId,
     ...(useNoRtWorkflow ? { panelMode: nextPanelMode } : {}),
+    plusAtModeEnabled: nextPlusAtModeEnabled,
     plusPaymentMethod: nextPaymentMethod,
     plusAccountAccessStrategy: nextAccountAccessStrategy,
     signupMethod: nextSignupMethod,
@@ -11837,6 +11909,7 @@ function applySettingsState(state) {
     syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, {
       activeFlowId: state?.flowId || state?.activeFlowId,
       panelMode: state?.panelMode,
+      plusAtModeEnabled: Boolean(state?.plusAtModeEnabled),
       plusPaymentMethod: state?.plusPaymentMethod,
       plusAccountAccessStrategy: state?.plusAccountAccessStrategy,
       signupMethod: stepDefinitionState.signupMethod,
@@ -11903,6 +11976,9 @@ function applySettingsState(state) {
   syncPasswordField(state || {});
   if (typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled) {
     inputPlusModeEnabled.checked = FIXED_PLUS_MODE_ENABLED;
+  }
+  if (typeof inputPlusAtModeEnabled !== 'undefined' && inputPlusAtModeEnabled) {
+    inputPlusAtModeEnabled.checked = Boolean(state?.plusAtModeEnabled);
   }
   if (typeof selectPlusPaymentMethod !== 'undefined' && selectPlusPaymentMethod) {
     selectPlusPaymentMethod.value = normalizePlusPaymentMethod(state?.plusPaymentMethod);
@@ -16602,6 +16678,48 @@ inputPlusModeEnabled?.addEventListener('change', () => {
   saveSettings({ silent: true }).catch(() => { });
 });
 
+inputPlusAtModeEnabled?.addEventListener('change', () => {
+  updatePlusModeUI();
+  const stepDefinitionState = typeof resolveStepDefinitionCapabilityState === 'function'
+    ? resolveStepDefinitionCapabilityState({
+      ...(latestState || {}),
+      plusModeEnabled: Boolean(inputPlusModeEnabled?.checked),
+      signupMethod: getSelectedSignupMethod(),
+    }, {
+      signupMethod: getSelectedSignupMethod(),
+    })
+    : {
+      plusModeEnabled: Boolean(inputPlusModeEnabled?.checked),
+      signupMethod: getSelectedSignupMethod(),
+    };
+  syncStepDefinitionsForMode(stepDefinitionState.plusModeEnabled, getSelectedPlusPaymentMethod(), {
+    render: true,
+    plusAtModeEnabled: Boolean(inputPlusAtModeEnabled.checked),
+    signupMethod: stepDefinitionState.signupMethod,
+    plusAccountAccessStrategy: stepDefinitionState.plusAccountAccessStrategy,
+  });
+  markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+btnOpenAtDailyFile?.addEventListener('click', async () => {
+  try {
+    const openedPath = await openAtAccountHistoryFile('daily');
+    showToast(`已打开：${openedPath || 'AT 当日文件'}`, 'success', 2200);
+  } catch (error) {
+    showToast(error?.message || '打开 AT 当日文件失败。', 'error');
+  }
+});
+
+btnOpenAtHistoryFile?.addEventListener('click', async () => {
+  try {
+    const openedPath = await openAtAccountHistoryFile('latest');
+    showToast(`已打开：${openedPath || 'AT 总文件'}`, 'success', 2200);
+  } catch (error) {
+    showToast(error?.message || '打开 AT 总文件失败。', 'error');
+  }
+});
+
 [inputPlusCheckoutModeUs, inputPlusCheckoutModeJp].filter(Boolean).forEach((input) => {
   input.addEventListener('change', () => {
     if (!input.checked) {
@@ -19605,6 +19723,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.payload.gopayHelperLocalSmsHelperEnabled !== undefined && inputGpcHelperLocalSmsEnabled) {
         inputGpcHelperLocalSmsEnabled.checked = Boolean(message.payload.gopayHelperLocalSmsHelperEnabled);
       }
+      if (message.payload.plusAtModeEnabled !== undefined && inputPlusAtModeEnabled) {
+        inputPlusAtModeEnabled.checked = Boolean(message.payload.plusAtModeEnabled);
+      }
       if (message.payload.gopayHelperLocalSmsHelperUrl !== undefined && inputGpcHelperLocalSmsUrl) {
         inputGpcHelperLocalSmsUrl.value = normalizeGpcLocalSmsHelperBaseUrlValue(message.payload.gopayHelperLocalSmsHelperUrl);
       }
@@ -19619,6 +19740,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       if (
         message.payload.plusModeEnabled !== undefined
+        || message.payload.plusAtModeEnabled !== undefined
         || message.payload.plusPaymentMethod !== undefined
         || message.payload.plusAccountAccessStrategy !== undefined
         || message.payload.gopayHelperPhoneMode !== undefined
@@ -19639,6 +19761,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           latestState?.plusPaymentMethod,
           {
             render: true,
+            plusAtModeEnabled: Boolean(latestState?.plusAtModeEnabled),
             signupMethod: stepDefinitionState.signupMethod,
             plusAccountAccessStrategy: stepDefinitionState.plusAccountAccessStrategy,
           }

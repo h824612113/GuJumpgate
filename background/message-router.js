@@ -1922,7 +1922,10 @@
         }
 
         case 'TAKEOVER_AUTO_RUN': {
-          await requestStop({ logMessage: '已确认手动接管，正在停止自动流程并切换为手动控制...' });
+          await requestStop({
+            logMessage: '已确认手动接管，正在停止自动流程并切换为手动控制...',
+            markRegistrationAccountUsed: true,
+          });
           await addLog('自动流程已切换为手动控制。', 'warn');
           return { ok: true };
         }
@@ -1983,6 +1986,8 @@
           const plusPaymentChanged = Object.prototype.hasOwnProperty.call(updates, 'plusPaymentMethod')
             && normalizePlusPaymentMethodForDisplay(currentState?.plusPaymentMethod || 'paypal')
               !== normalizePlusPaymentMethodForDisplay(updates.plusPaymentMethod || 'paypal');
+          const plusAtModeChanged = Object.prototype.hasOwnProperty.call(updates, 'plusAtModeEnabled')
+            && Boolean(currentState?.plusAtModeEnabled) !== Boolean(updates.plusAtModeEnabled);
           const phoneSignupReloginAfterBindEmailChanged = Object.prototype.hasOwnProperty.call(updates, 'phoneSignupReloginAfterBindEmailEnabled')
             && Boolean(currentState?.phoneSignupReloginAfterBindEmailEnabled) !== Boolean(updates.phoneSignupReloginAfterBindEmailEnabled);
           const nextPlusModeEnabled = Object.prototype.hasOwnProperty.call(updates, 'plusModeEnabled')
@@ -1990,6 +1995,7 @@
             : Boolean(currentState?.plusModeEnabled);
           const stepModeChanged = modeChanged
             || (nextPlusModeEnabled && plusPaymentChanged)
+            || plusAtModeChanged
             || phoneSignupReloginAfterBindEmailChanged;
           const oauthFlowTimeoutDisabled = Object.prototype.hasOwnProperty.call(updates, 'oauthFlowTimeoutEnabled')
             && updates.oauthFlowTimeoutEnabled === false;
@@ -2478,7 +2484,7 @@
         }
 
         case 'STOP_FLOW': {
-          await requestStop();
+          await requestStop({ markRegistrationAccountUsed: true });
           return { ok: true };
         }
 
