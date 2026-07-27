@@ -116,6 +116,12 @@ const PLUS_PAYPAL_SMS_OAUTH_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.ge
   plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_SMS_OAUTH,
   signupMethod: 'phone',
 }) || PLUS_PAYPAL_STEP_DEFINITIONS;
+const PLUS_PAYPAL_PHONE_BIND_OAUTH_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.getSteps?.({
+  activeFlowId: DEFAULT_ACTIVE_FLOW_ID,
+  plusModeEnabled: true,
+  plusPaymentMethod: 'paypal',
+  plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH,
+}) || PLUS_PAYPAL_STEP_DEFINITIONS;
 const PLUS_PAYPAL_SUB2API_SESSION_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.getSteps?.({
   activeFlowId: DEFAULT_ACTIVE_FLOW_ID,
   plusModeEnabled: true,
@@ -214,6 +220,7 @@ const ALL_STEP_DEFINITIONS = self.MultiPageStepDefinitions?.getAllSteps?.({
   ...NORMAL_PHONE_STEP_DEFINITIONS,
   ...NORMAL_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_STEP_DEFINITIONS,
+  ...PLUS_PAYPAL_PHONE_BIND_OAUTH_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_SUB2API_SESSION_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_CPA_SESSION_STEP_DEFINITIONS,
   ...PLUS_PAYPAL_PHONE_STEP_DEFINITIONS,
@@ -1129,6 +1136,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   codex2apiAdminKey: '',
   customPassword: '',
   plusModeEnabled: true,
+  atModeEnabled: false,
   plusPaymentMethod: DEFAULT_PLUS_PAYMENT_METHOD,
   plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_OAUTH,
   plusCheckoutMode: 'us_pp',
@@ -3332,6 +3340,12 @@ function normalizePlusAccountAccessStrategyForState(state = {}) {
   const panelMode = typeof getPanelMode === 'function'
     ? getPanelMode(state)
     : normalizePanelMode(state?.panelMode);
+  if (
+    Boolean(state?.atModeEnabled)
+    && ['cpa', 'local-cpa-json', 'local-cpa-json-no-rt', 'sub2api'].includes(panelMode)
+  ) {
+    return PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH;
+  }
   const strategy = normalizePlusAccountAccessStrategy(state?.plusAccountAccessStrategy);
   if (
     (panelMode === 'cpa' || panelMode === 'local-cpa-json' || panelMode === 'local-cpa-json-no-rt' || panelMode === 'sub2api')
@@ -4213,6 +4227,7 @@ function normalizePersistentSettingValue(key, value) {
     case 'freePhoneReuseEnabled':
     case 'freePhoneReuseAutoEnabled':
     case 'plusModeEnabled':
+    case 'atModeEnabled':
       return Boolean(value);
     case 'phoneSmsProvider':
       return normalizePhoneSmsProvider(value);
@@ -14975,12 +14990,94 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       : '';
     return title && title !== nodeId ? `${nodeId}（${title}）` : nodeId;
   };
+  const applyAtModePostLoginStateAfterSignupCodeIfNeeded = async (state = {}, activeNodeIds = []) => {
+    const step1Module = self.MultiPageBackgroundStep1 || {};
+    if (typeof step1Module.isAtModePhoneBindOauthState === 'function' && !step1Module.isAtModePhoneBindOauthState(state)) {
+      return null;
+    }
+    if (typeof step1Module.isAtModePhoneBindOauthState !== 'function' && !state?.atModeEnabled) {
+      return null;
+    }
+    if (
+      String(state?.plusAccountAccessStrategy || '').trim().toLowerCase() === PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH
+      && typeof step1Module.applyAtModePhoneBindOauthState === 'function'
+    ) {
+      return step1Module.applyAtModePhoneBindOauthState({
+        state,
+        activeNodeIds,
+        nodeStatuses: state?.nodeStatuses || {},
+        setNodeStatus,
+        setState,
+        addLog,
+      });
+    }
+    if (
+      typeof step1Module.inspectAtModeSession !== 'function'
+      || typeof step1Module.applyAtModePostLoginState !== 'function'
+    ) {
+      throw new Error('AT 模式缺少登录后 Plus 检测模块。');
+    }
+    try {
+      const signupTabId = await getTabId('signup-page');
+      if (!signupTabId) {
+        throw new Error('AT 模式未找到登录后的 ChatGPT / OpenAI 标签页，无法检测 Plus 状态。');
+      }
+      const signupTab = await chrome.tabs.get(signupTabId).catch(() => null);
+      const sessionResult = await readChatGptSessionFromTabForExport(signupTab);
+      const inspection = step1Module.inspectAtModeSession(sessionResult);
+      return await step1Module.applyAtModePostLoginState({
+        state,
+        inspection,
+        activeNodeIds,
+        nodeStatuses: state?.nodeStatuses || {},
+        setNodeStatus,
+        setState,
+        addLog,
+      });
+    } catch (error) {
+      if (error && typeof error === 'object') {
+        try {
+          error.atModePostLoginFailure = true;
+        } catch (_err) {
+          // Host errors can be non-extensible.
+        }
+      }
+      throw error;
+    }
+  };
+  const applyAtModeAlreadyPaidCheckoutStateAfterFailure = async (state = {}, activeNodeIds = []) => {
+    const step1Module = self.MultiPageBackgroundStep1 || {};
+    if (typeof step1Module.isAtModePhoneBindOauthState === 'function' && !step1Module.isAtModePhoneBindOauthState(state)) {
+      return null;
+    }
+    if (typeof step1Module.isAtModePhoneBindOauthState !== 'function' && !state?.atModeEnabled) {
+      return null;
+    }
+    if (typeof step1Module.applyAtModeAlreadyPaidCheckoutState !== 'function') {
+      throw new Error('AT 模式缺少 already-paid Checkout 兜底模块。');
+    }
+    const latestState = await getState();
+    return step1Module.applyAtModeAlreadyPaidCheckoutState({
+      state: {
+        ...state,
+        ...latestState,
+      },
+      activeNodeIds,
+      nodeStatuses: latestState?.nodeStatuses || state?.nodeStatuses || {},
+      setNodeStatus,
+      setState,
+      addLog,
+    });
+  };
   const getNodeIndex = (state, nodeId) => getAutoRunWorkflowNodeIds(state).indexOf(nodeId);
   const shouldRunNamedNode = async (nodeId) => {
     const state = await getState();
     const nodeIds = getAutoRunWorkflowNodeIds(state);
     const targetIndex = nodeIds.indexOf(nodeId);
     if (targetIndex < 0) {
+      return false;
+    }
+    if (isStepDoneStatus(getNodeStatusForNode(state, nodeId))) {
       return false;
     }
     const startIndex = nodeIds.indexOf(currentStartNodeId);
@@ -15185,14 +15282,37 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       nodeIndex += 1;
       continue;
     }
+    if (
+      nodeId === 'fill-profile'
+      && (
+        typeof self.MultiPageBackgroundStep1?.isAtModePhoneBindOauthState === 'function'
+          ? self.MultiPageBackgroundStep1.isAtModePhoneBindOauthState(latestState)
+          : latestState?.atModeEnabled
+      )
+    ) {
+      await applyAtModePostLoginStateAfterSignupCodeIfNeeded(latestState, nodeIds);
+      const refreshedState = await getState();
+      const refreshedStatus = getNodeStatusForNode(refreshedState, nodeId);
+      if (isStepDoneStatus(refreshedStatus)) {
+        await addLog(`AT 模式：已确认 Plus，节点 ${nodeId} 当前状态为 ${refreshedStatus}，直接继续 OAuth 手机绑定前置节点。`, 'info');
+        nodeIndex += 1;
+        continue;
+      }
+    }
     const currentStatus = getNodeStatusForNode(latestState, nodeId);
     if (isStepDoneStatus(currentStatus)) {
       await addLog(`自动运行：节点 ${nodeId} 当前状态为 ${currentStatus}，将直接继续后续流程。`, 'info');
+      if (nodeId === 'fetch-signup-code') {
+        await applyAtModePostLoginStateAfterSignupCodeIfNeeded(latestState, nodeIds);
+      }
       nodeIndex += 1;
       continue;
     }
     try {
       await executeNodeAndWaitWithAutoRunIdleLogWatchdog(nodeId, getAutoRunNodeDelayMs(nodeId));
+      if (nodeId === 'fetch-signup-code') {
+        await applyAtModePostLoginStateAfterSignupCodeIfNeeded(await getState(), nodeIds);
+      }
       nodeIndex += 1;
     } catch (err) {
       attachFailedNode(err, nodeId, latestState);
@@ -15206,6 +15326,21 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
 
       const step = getDisplayStepForNode(nodeId, latestState);
       const nodeExecutionKey = getNodeExecutionKey(nodeId, latestState);
+      if (
+        nodeId === 'plus-checkout-create'
+        && isCloudCheckoutAlreadyPaidFailure(err)
+        && (
+          typeof self.MultiPageBackgroundStep1?.isAtModePhoneBindOauthState === 'function'
+            ? self.MultiPageBackgroundStep1.isAtModePhoneBindOauthState(latestState)
+            : latestState?.atModeEnabled
+        )
+      ) {
+        await addLog(`AT 模式：第 6 步返回账号已是 Plus（${getErrorMessage(err)}），跳过资料和 Checkout，直接进入第 7 步 OAuth 手机绑定。`, 'warn');
+        await applyAtModeAlreadyPaidCheckoutStateAfterFailure(latestState, nodeIds);
+        const oauthIndex = getNodeIndex(await getState(), 'oauth-login');
+        nodeIndex = oauthIndex >= 0 ? oauthIndex : nodeIndex + 1;
+        continue;
+      }
       if (isStep9WhatsAppPageRestartError(err)) {
         const nextRestartCount = Math.max(0, Number(latestState?.whatsappPhoneVerificationRestartCount) || 0) + 1;
         await restartStep9WhatsAppAttemptFromNode(nodeId, nextRestartCount, err);
@@ -15417,6 +15552,10 @@ async function runAutoSequenceFromNodeGraph(startNodeId, context = {}) {
       }
 
       if (nodeId === 'fetch-signup-code') {
+        if (err?.atModePostLoginFailure) {
+          await addLog(`AT 模式：登录后 Plus 检测失败，停止当前账号：${getErrorMessage(err)}`, 'error');
+          throw err;
+        }
         if (isSignupUserAlreadyExistsFailure(err)) {
           throw err;
         }
@@ -16148,7 +16287,7 @@ async function executeReloginBoundEmail(state = {}) {
 }
 
 const stepExecutorsByKey = {
-  'open-chatgpt': () => step1Executor.executeStep1(),
+  'open-chatgpt': (state) => step1Executor.executeStep1(state),
   'submit-signup-email': (state) => step2Executor.executeStep2(state),
   'fill-password': (state) => step3Executor.executeStep3(state),
   'fetch-signup-code': (state) => step4Executor.executeStep4(state),
@@ -16366,6 +16505,7 @@ const normalPhoneStepRegistry = buildStepRegistry(NORMAL_PHONE_STEP_DEFINITIONS)
 const normalPhoneBoundEmailReloginStepRegistry = buildStepRegistry(NORMAL_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS);
 const plusPayPalStepRegistry = buildStepRegistry(PLUS_PAYPAL_STEP_DEFINITIONS);
 const plusPayPalSmsOauthStepRegistry = buildStepRegistry(PLUS_PAYPAL_SMS_OAUTH_STEP_DEFINITIONS);
+const plusPayPalPhoneBindOauthStepRegistry = buildStepRegistry(PLUS_PAYPAL_PHONE_BIND_OAUTH_STEP_DEFINITIONS);
 const plusPayPalPhoneStepRegistry = buildStepRegistry(PLUS_PAYPAL_PHONE_STEP_DEFINITIONS);
 const plusPayPalPhoneBoundEmailReloginStepRegistry = buildStepRegistry(PLUS_PAYPAL_PHONE_BOUND_EMAIL_RELOGIN_STEP_DEFINITIONS);
 const plusPayPalSub2ApiSessionStepRegistry = buildStepRegistry(PLUS_PAYPAL_SUB2API_SESSION_STEP_DEFINITIONS);
@@ -16405,6 +16545,9 @@ function getStepRegistryForState(state = {}) {
     : normalizePlusAccountAccessStrategyForState(state);
   if (paymentMethod === PLUS_PAYMENT_METHOD_PAYPAL && normalizePlusAccountAccessStrategyForState(state) === PLUS_ACCOUNT_ACCESS_STRATEGY_SMS_OAUTH) {
     return plusPayPalSmsOauthStepRegistry;
+  }
+  if (paymentMethod === PLUS_PAYMENT_METHOD_PAYPAL && normalizePlusAccountAccessStrategyForState(state) === PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH) {
+    return plusPayPalPhoneBindOauthStepRegistry;
   }
   if (paymentMethod === PLUS_PAYMENT_METHOD_GPC_HELPER) {
     if (plusAccountAccessStrategy === PLUS_ACCOUNT_ACCESS_STRATEGY_SUB2API_CODEX_SESSION) {
@@ -16483,7 +16626,7 @@ async function resolveSignupEmailForFlow(state, options = {}) {
 // ============================================================
 
 async function executeStep1() {
-  return step1Executor.executeStep1();
+  return step1Executor.executeStep1(await getState());
 }
 
 // ============================================================

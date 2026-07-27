@@ -183,6 +183,8 @@ const inputCodex2ApiAdminKey = document.getElementById('input-codex2api-admin-ke
 const rowCustomPassword = document.getElementById('row-custom-password');
 const rowPlusMode = document.getElementById('row-plus-mode');
 const inputPlusModeEnabled = document.getElementById('input-plus-mode-enabled');
+const rowAtMode = document.getElementById('row-at-mode');
+const inputAtModeEnabled = document.getElementById('input-at-mode-enabled');
 const plusCheckoutModeSwitchGroup = document.getElementById('plus-checkout-mode-switch-group');
 const inputPlusCheckoutModeUs = document.getElementById('input-plus-checkout-mode-us');
 const inputPlusCheckoutModeJp = document.getElementById('input-plus-checkout-mode-jp');
@@ -5415,6 +5417,7 @@ function collectSettingsPayload() {
   const rawPlusModeEnabled = typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled
     ? Boolean(inputPlusModeEnabled.checked)
     : Boolean(latestState?.plusModeEnabled);
+  const atModeEnabled = Boolean(inputAtModeEnabled?.checked);
   const rawPhoneVerificationEnabled = Boolean(inputPhoneVerificationEnabled?.checked);
   const capabilityState = typeof resolveCurrentSidepanelCapabilities === 'function'
     ? resolveCurrentSidepanelCapabilities({
@@ -5458,8 +5461,9 @@ function collectSettingsPayload() {
     ? Boolean(capabilityState.runtimeLocks?.phoneVerificationEnabled)
     : rawPhoneVerificationEnabled;
   const effectiveSignupMethod = capabilityState?.effectiveSignupMethod || selectedSignupMethod;
-  const effectivePlusAccountAccessStrategy = capabilityState?.effectivePlusAccountAccessStrategy
-    || rawPlusAccountAccessStrategy;
+  const effectivePlusAccountAccessStrategy = atModeEnabled
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH
+    : (capabilityState?.effectivePlusAccountAccessStrategy || rawPlusAccountAccessStrategy);
   const plusPaymentMethod = getSelectedPlusPaymentMethod();
   const normalizeGpcHelperPhoneModeSafe = typeof normalizeGpcHelperPhoneModeValue === 'function'
     ? normalizeGpcHelperPhoneModeValue
@@ -5592,6 +5596,7 @@ function collectSettingsPayload() {
     codex2apiUrl: inputCodex2ApiUrl.value.trim(),
     codex2apiAdminKey: inputCodex2ApiAdminKey.value.trim(),
     plusModeEnabled: fixedPlusModeEnabled,
+    atModeEnabled: Boolean(inputAtModeEnabled?.checked),
     plusPaymentMethod,
     plusCheckoutMode: selectedPlusCheckoutMode,
     plusCheckoutProfiles: nextPlusCheckoutProfiles,
@@ -11339,6 +11344,12 @@ function updatePlusModeUI() {
     : true;
   const enabled = supportsPlusMode && rawEnabled;
   const method = enabled ? getSelectedPlusPaymentMethod() : defaultMethod;
+  if (rowAtMode) {
+    rowAtMode.style.display = supportsPlusMode ? '' : 'none';
+  }
+  if (inputAtModeEnabled) {
+    inputAtModeEnabled.disabled = !enabled;
+  }
   const gpcPhoneMode = normalizeGpcHelperPhoneModeValue(
     typeof selectGpcHelperPhoneMode !== 'undefined' && selectGpcHelperPhoneMode
       ? selectGpcHelperPhoneMode.value
@@ -12127,6 +12138,9 @@ function applyAutoRunStatus(payload = currentAutoRun) {
       ? shouldLockRunCountToEmailPool()
       : getLockedRunCountFromEmailPool() > 0
   );
+  if (inputAtModeEnabled) {
+    inputAtModeEnabled.disabled = scheduled || locked || !Boolean(inputPlusModeEnabled?.checked);
+  }
   btnAutoRun.disabled = currentAutoRun.autoRunning;
   btnFetchEmail.disabled = locked
     || isCustomMailProvider()
@@ -12440,6 +12454,9 @@ function applySettingsState(state) {
   syncPasswordField(state || {});
   if (typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled) {
     inputPlusModeEnabled.checked = FIXED_PLUS_MODE_ENABLED;
+  }
+  if (inputAtModeEnabled) {
+    inputAtModeEnabled.checked = Boolean(state?.atModeEnabled);
   }
   if (typeof selectPlusPaymentMethod !== 'undefined' && selectPlusPaymentMethod) {
     selectPlusPaymentMethod.value = normalizePlusPaymentMethod(state?.plusPaymentMethod);
@@ -13075,6 +13092,14 @@ function applySettingsState(state) {
     updatePlusModeUI();
   }
   updatePanelModeUI();
+  if (inputAtModeEnabled?.checked) {
+    syncStepDefinitionsForMode(Boolean(inputPlusModeEnabled?.checked), {
+      render: true,
+      plusPaymentMethod: getSelectedPlusPaymentMethod(),
+      signupMethod: getSelectedSignupMethod(),
+      plusAccountAccessStrategy: PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH,
+    });
+  }
   updateMailProviderUI();
   if (typeof queueCustomEmailPoolRefresh === 'function') {
     queueCustomEmailPoolRefresh();
@@ -14867,6 +14892,9 @@ function updatePanelModeUI() {
   if (rawExportTarget === 'codex2api') {
     rawStrategyUiValue = ACCOUNT_ACCESS_STRATEGY_UI_OAUTH;
   }
+  if (inputAtModeEnabled?.checked && rawExportTarget !== 'codex2api') {
+    rawStrategyUiValue = ACCOUNT_ACCESS_STRATEGY_UI_PHONE_BIND_OAUTH;
+  }
   const rawPanelMode = resolvePanelModeFromExportAndStrategy(rawExportTarget, rawStrategyUiValue);
   const rawPlusAccountAccessStrategy = resolvePlusAccountAccessStrategyFromExportAndStrategy(
     rawExportTarget,
@@ -16007,10 +16035,11 @@ function validateHostedCheckoutContactConfig(options = {}) {
   const plusModeEnabled = typeof inputPlusModeEnabled !== 'undefined' && inputPlusModeEnabled
     ? Boolean(inputPlusModeEnabled.checked)
     : Boolean(latestState?.plusModeEnabled);
+  const atModeEnabled = Boolean(inputAtModeEnabled?.checked || latestState?.atModeEnabled);
   const poolText = normalizeHostedCheckoutSmsPoolTextValue(inputHostedCheckoutSmsPool?.value || latestState?.hostedCheckoutSmsPoolText || '');
   const phone = normalizeHostedCheckoutPhoneValue(inputHostedCheckoutPhone?.value || '');
   const verificationUrl = normalizeHostedCheckoutVerificationUrlValue(inputHostedCheckoutVerificationUrl?.value || '');
-  const required = plusModeEnabled && paymentMethod === 'paypal' && !poolText;
+  const required = plusModeEnabled && !atModeEnabled && paymentMethod === 'paypal' && !poolText;
   const missingPhone = required && !phone;
   const missingVerificationUrl = required && !verificationUrl;
   const valid = !missingPhone && !missingVerificationUrl;
@@ -17067,6 +17096,26 @@ inputPlusModeEnabled?.addEventListener('change', () => {
     render: true,
     signupMethod: stepDefinitionState.signupMethod,
     plusAccountAccessStrategy: stepDefinitionState.plusAccountAccessStrategy,
+  });
+  validateHostedCheckoutContactConfig();
+  markSettingsDirty(true);
+  saveSettings({ silent: true }).catch(() => { });
+});
+
+inputAtModeEnabled?.addEventListener('change', () => {
+  if (inputAtModeEnabled.checked && selectAccountAccessStrategy) {
+    selectAccountAccessStrategy.value = ACCOUNT_ACCESS_STRATEGY_UI_PHONE_BIND_OAUTH;
+  }
+  updatePlusModeUI();
+  updatePanelModeUI();
+  const nextStrategy = inputAtModeEnabled.checked
+    ? PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH
+    : getSelectedExportSettings().plusAccountAccessStrategy;
+  syncStepDefinitionsForMode(Boolean(inputPlusModeEnabled?.checked), {
+    render: true,
+    plusPaymentMethod: getSelectedPlusPaymentMethod(),
+    signupMethod: getSelectedSignupMethod(),
+    plusAccountAccessStrategy: nextStrategy,
   });
   validateHostedCheckoutContactConfig();
   markSettingsDirty(true);
@@ -18704,6 +18753,9 @@ function isPlusCheckoutCloudConversionEnabled() {
 }
 
 function validatePlusCheckoutCloudConversionConfig(options = {}) {
+  if (inputAtModeEnabled?.checked || latestState?.atModeEnabled) {
+    return { valid: true, message: '' };
+  }
   const method = normalizePlusPaymentMethod(
     typeof selectPlusPaymentMethod !== 'undefined' && selectPlusPaymentMethod
       ? selectPlusPaymentMethod.value
@@ -20285,6 +20337,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       if (message.payload.plusModeEnabled !== undefined && inputPlusModeEnabled) {
         inputPlusModeEnabled.checked = Boolean(message.payload.plusModeEnabled);
       }
+      if (message.payload.atModeEnabled !== undefined && inputAtModeEnabled) {
+        inputAtModeEnabled.checked = Boolean(message.payload.atModeEnabled);
+      }
       if (message.payload.plusPaymentMethod !== undefined && selectPlusPaymentMethod) {
         selectPlusPaymentMethod.value = normalizePlusPaymentMethod(message.payload.plusPaymentMethod);
       }
@@ -20319,6 +20374,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       }
       if (
         message.payload.plusModeEnabled !== undefined
+        || message.payload.atModeEnabled !== undefined
         || message.payload.plusPaymentMethod !== undefined
         || message.payload.plusAccountAccessStrategy !== undefined
         || message.payload.gopayHelperPhoneMode !== undefined
@@ -20340,7 +20396,9 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
           {
             render: true,
             signupMethod: stepDefinitionState.signupMethod,
-            plusAccountAccessStrategy: stepDefinitionState.plusAccountAccessStrategy,
+            plusAccountAccessStrategy: inputAtModeEnabled?.checked
+              ? PLUS_ACCOUNT_ACCESS_STRATEGY_PHONE_BIND_OAUTH
+              : stepDefinitionState.plusAccountAccessStrategy,
           }
         );
         updatePlusModeUI();

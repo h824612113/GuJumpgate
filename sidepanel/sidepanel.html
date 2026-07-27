@@ -315,6 +315,22 @@
           </div>
         </div>
       </div>
+      <div class="data-row" id="row-at-mode">
+        <span class="data-label">AT 模式</span>
+        <div class="data-inline setting-pair">
+          <div class="setting-group setting-group-primary">
+            <label class="toggle-switch" for="input-at-mode-enabled"
+              title="按邮箱池逐个登录，登录成功后检测 Plus；Plus 账号跳过资料和 Checkout，直接进行 OAuth 手机绑定并远端推送">
+              <input type="checkbox" id="input-at-mode-enabled" />
+              <span class="toggle-switch-track" aria-hidden="true">
+                <span class="toggle-switch-thumb"></span>
+              </span>
+              <span>AT 账号接码绑定</span>
+            </label>
+          </div>
+          <span class="setting-caption">先邮箱登录；确认 Plus 后跳过第 5/6 步，继续 OAuth 手机绑定</span>
+        </div>
+      </div>
       <div class="data-row" id="row-plus-payment-method" style="display:none;">
         <span class="data-label">Plus 支付</span>
         <div class="data-inline">
