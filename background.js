@@ -4,6 +4,8 @@ importScripts(
   'shared/source-registry.js',
   'shared/flow-capabilities.js',
   'shared/session-to-json-converter.js',
+  'mixed-mailbox-utils.js',
+  'mixed-mailbox-runtime.js',
   'background/local-cli-proxy-api.js',
   'managed-alias-utils.js',
   'mail2925-utils.js',
@@ -78,6 +80,7 @@ importScripts(
   'background/cloudmail-provider.js',
   'background/moemail-provider.js',
   'background/yydsmail-provider.js',
+  'background/icloud-url-provider.js',
   'icloud-utils.js',
   'mail-provider-utils.js',
   'content/activation-utils.js'
@@ -554,6 +557,7 @@ const ICLOUD_TRANSIENT_RETRY_MAX_ATTEMPTS = 2;
 const ICLOUD_TRANSIENT_RETRY_DELAY_MS = 1200;
 const ICLOUD_PROVIDER = 'icloud';
 const ICLOUD_API_PROVIDER = 'icloud-api';
+const ICLOUD_URL_PROVIDER = 'icloud-url';
 const GMAIL_PROVIDER = 'gmail';
 const GMAIL_ALIAS_GENERATOR = 'gmail-alias';
 const HOTMAIL_PROVIDER = 'hotmail-api';
@@ -571,6 +575,7 @@ const YYDSMAIL_GENERATOR = 'yydsmail';
 const OUTLOOK_EMAIL_PLUS_PROVIDER = 'outlook-email-plus';
 const OUTLOOK_EMAIL_PLUS_GENERATOR = 'outlook-email-plus';
 const CUSTOM_EMAIL_POOL_GENERATOR = 'custom-pool';
+const MIXED_EMAIL_POOL_GENERATOR = 'mixed-pool';
 const HOTMAIL_MAILBOXES = ['INBOX', 'Junk'];
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const CLOUDFLARE_SECURITY_BLOCK_ERROR_PREFIX = 'CF_SECURITY_BLOCKED::';
@@ -1263,6 +1268,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   customMailProviderPool: [],
   customEmailPool: [],
   customEmailPoolEntries: [],
+  mixedMailboxQueueEntries: [],
   autoDeleteUsedIcloudAlias: false,
   icloudHostPreference: 'auto',
   icloudTargetMailboxType: 'icloud-inbox',
@@ -2860,6 +2866,9 @@ function normalizeEmailGenerator(value = '') {
   if (normalized === customEmailPoolGenerator) {
     return customEmailPoolGenerator;
   }
+  if (normalized === MIXED_EMAIL_POOL_GENERATOR) {
+    return MIXED_EMAIL_POOL_GENERATOR;
+  }
   if (normalized === 'icloud') {
     return 'icloud';
   }
@@ -2918,6 +2927,21 @@ function normalizeCustomEmailPoolEntryObjects(value = []) {
   }
 
   return entries;
+}
+
+function normalizeMixedMailboxQueueEntries(value = []) {
+  return self.MixedMailboxUtils?.normalizeMixedMailboxQueueEntries?.(value) || [];
+}
+
+function isMixedMailboxGenerator(stateOrValue = {}) {
+  const generator = typeof stateOrValue === 'string'
+    ? stateOrValue
+    : stateOrValue?.emailGenerator;
+  return normalizeEmailGenerator(generator) === MIXED_EMAIL_POOL_GENERATOR;
+}
+
+function getActiveMixedMailboxEntry(state = {}) {
+  return self.MixedMailboxRuntime?.getActiveMixedMailboxEntry?.(state) || null;
 }
 
 function isCustomEmailPoolGenerator(stateOrValue = {}) {
@@ -4292,6 +4316,8 @@ function normalizePersistentSettingValue(key, value) {
       return normalizeCustomEmailPool(value);
     case 'customEmailPoolEntries':
       return normalizeCustomEmailPoolEntryObjects(value);
+    case 'mixedMailboxQueueEntries':
+      return normalizeMixedMailboxQueueEntries(value);
     case 'autoDeleteUsedIcloudAlias':
     case 'accountRunHistoryTextEnabled':
     case 'cloudflareTempEmailUseRandomSubdomain':
@@ -6164,6 +6190,85 @@ async function syncHotmailAccounts(accounts) {
   await setState({ hotmailAccounts: normalized });
   broadcastDataUpdate({ hotmailAccounts: normalized });
   return normalized;
+}
+
+async function syncMixedMailboxQueue(entries) {
+  const normalized = normalizeMixedMailboxQueueEntries(entries);
+  await setPersistentSettings({ mixedMailboxQueueEntries: normalized });
+  await setState({ mixedMailboxQueueEntries: normalized });
+  broadcastDataUpdate({ mixedMailboxQueueEntries: normalized });
+  return normalized;
+}
+
+async function importMixedMailboxQueue(rawText = '') {
+  const parsed = self.MixedMailboxUtils?.parseMixedMailboxImport?.(rawText);
+  if (!parsed) {
+    throw new Error('统一邮箱队列解析器未加载。');
+  }
+
+  const state = await getState();
+  let hotmailAccounts = normalizeHotmailAccounts(state.hotmailAccounts);
+  const queueRecords = [];
+
+  for (const record of parsed.records) {
+    if (record.type === 'outlook') {
+      const normalizedEmail = String(record.email || '').trim().toLowerCase();
+      const existing = hotmailAccounts.find(
+        (account) => String(account?.email || '').trim().toLowerCase() === normalizedEmail
+      ) || null;
+      const credentialsChanged = !existing
+        || existing.password !== String(record.password || '')
+        || existing.clientId !== String(record.clientId || '').trim()
+        || existing.refreshToken !== String(record.refreshToken || '');
+      const account = normalizeHotmailAccount({
+        ...(existing || {}),
+        email: normalizedEmail,
+        password: record.password,
+        clientId: record.clientId,
+        refreshToken: record.refreshToken,
+        id: existing?.id || crypto.randomUUID(),
+        ...(credentialsChanged ? { status: 'pending', lastAuthAt: 0, lastError: '' } : {}),
+      });
+      hotmailAccounts = existing
+        ? hotmailAccounts.map((item) => (item.id === account.id ? account : item))
+        : [...hotmailAccounts, account];
+      queueRecords.push({
+        type: 'outlook',
+        email: normalizedEmail,
+        hotmailAccountId: account.id,
+      });
+      continue;
+    }
+
+    queueRecords.push(record);
+  }
+
+  const merged = self.MixedMailboxUtils?.mergeMixedMailboxQueueEntries?.(
+    state.mixedMailboxQueueEntries,
+    queueRecords
+  );
+  if (!merged) {
+    throw new Error('统一邮箱队列合并器未加载。');
+  }
+
+  const updates = {
+    hotmailAccounts,
+    mixedMailboxQueueEntries: merged.entries,
+  };
+  await setPersistentSettings(updates);
+  await setState(updates);
+  broadcastDataUpdate(updates);
+
+  return {
+    ...merged,
+    errors: parsed.errors,
+    ignoredCount: parsed.ignoredCount,
+    importedCount: parsed.records.length,
+  };
+}
+
+async function patchMixedMailboxQueue(entries = []) {
+  return syncMixedMailboxQueue(entries);
 }
 
 async function upsertHotmailAccount(input) {
@@ -15812,6 +15917,12 @@ const mailRuleRegistry = self.MultiPageBackgroundMailRuleRegistry?.createMailRul
     openai: openAiMailRules,
   },
 });
+const icloudUrlProvider = self.MultiPageIcloudUrlProvider?.createIcloudUrlProvider({
+  fetchImpl: typeof fetch === 'function' ? fetch.bind(globalThis) : null,
+  sleep: sleepWithStop,
+  throwIfStopped,
+  addLog,
+});
 const verificationFlowHelpers = self.MultiPageBackgroundVerificationFlow?.createVerificationFlowHelpers({
   addLog,
   buildVerificationPollPayload: mailRuleRegistry?.buildVerificationPollPayload,
@@ -15821,6 +15932,7 @@ const verificationFlowHelpers = self.MultiPageBackgroundVerificationFlow?.create
   CLOUD_MAIL_PROVIDER,
   FREEMAIL_PROVIDER,
   ICLOUD_API_PROVIDER,
+  ICLOUD_URL_PROVIDER,
   MOEMAIL_PROVIDER,
   YYDSMAIL_PROVIDER,
   OUTLOOK_EMAIL_PLUS_PROVIDER,
@@ -15846,6 +15958,7 @@ const verificationFlowHelpers = self.MultiPageBackgroundVerificationFlow?.create
   pollCloudMailVerificationCode,
   pollFreemailVerificationCode,
   pollIcloudApiVerificationCode,
+  pollIcloudUrlVerificationCode: (...args) => icloudUrlProvider.pollVerificationCode(...args),
   pollMoemailVerificationCode,
   pollYydsMailVerificationCode,
   pollOutlookEmailPlusVerificationCode,
@@ -15988,6 +16101,7 @@ const step4Executor = self.MultiPageBackgroundStep4?.createStep4Executor({
   getTabId,
   HOTMAIL_PROVIDER,
   ICLOUD_API_PROVIDER,
+  ICLOUD_URL_PROVIDER,
   isTabAlive,
   LUCKMAIL_PROVIDER,
   CLOUDFLARE_TEMP_EMAIL_PROVIDER,
@@ -16069,6 +16183,7 @@ const step8Executor = self.MultiPageBackgroundStep8?.createStep8Executor({
   getTabId,
   HOTMAIL_PROVIDER,
   ICLOUD_API_PROVIDER,
+  ICLOUD_URL_PROVIDER,
   isTabAlive,
   isVerificationMailPollingError,
   LUCKMAIL_PROVIDER,
@@ -16389,6 +16504,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   handleCloudflareSecurityBlocked,
   handleAutoRunLoopUnhandledError,
   importSettingsBundle,
+  importMixedMailboxQueue,
   invalidateDownstreamAfterStepRestart,
   isCloudflareSecurityBlockedError: isTerminalSecurityBlockedError,
   isAutoRunLockedState,
@@ -16415,6 +16531,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   notifyNodeError,
   pausePpBoomJob: (...args) => plusCheckoutCreateExecutor.pausePpBoomJob(...args),
   patchHotmailAccount,
+  patchMixedMailboxQueue,
   patchMail2925Account,
   registerTab,
   requestStop,
@@ -16650,7 +16767,11 @@ async function executeStep3(state) {
 // ============================================================
 
 function getMailConfig(state) {
-  const provider = state.mailProvider || 'qq';
+  const activeMixedEntry = isMixedMailboxGenerator(state) ? getActiveMixedMailboxEntry(state) : null;
+  const mixedProvider = activeMixedEntry
+    ? self.MixedMailboxUtils?.resolveMixedMailboxProvider?.(activeMixedEntry)
+    : '';
+  const provider = mixedProvider || state.mailProvider || 'qq';
   if (provider === 'custom') {
     return { provider: 'custom', label: '自定义邮箱' };
   }
@@ -16683,6 +16804,9 @@ function getMailConfig(state) {
   }
   if (provider === ICLOUD_API_PROVIDER) {
     return { provider: ICLOUD_API_PROVIDER, label: 'iCloud API（QQ 转发）' };
+  }
+  if (provider === ICLOUD_URL_PROVIDER) {
+    return { provider: ICLOUD_URL_PROVIDER, label: 'iCloud URL' };
   }
   if (provider === GMAIL_PROVIDER) {
     return {

@@ -124,6 +124,7 @@
       getStopRequested,
       handleAutoRunLoopUnhandledError,
       importSettingsBundle,
+      importMixedMailboxQueue,
       invalidateDownstreamAfterStepRestart,
       isCloudflareSecurityBlockedError,
       isAutoRunLockedState,
@@ -149,6 +150,7 @@
       notifyNodeError,
       patchMail2925Account,
       patchHotmailAccount,
+      patchMixedMailboxQueue,
       pollContributionStatus,
       pausePpBoomJob = null,
       registerTab,
@@ -2161,6 +2163,16 @@
         case 'UPSERT_HOTMAIL_ACCOUNT': {
           const account = await upsertHotmailAccount(message.payload || {});
           return { ok: true, account };
+        }
+
+        case 'IMPORT_MIXED_MAILBOX_QUEUE': {
+          const result = await importMixedMailboxQueue(String(message.payload?.text || ''));
+          return { ok: true, ...result };
+        }
+
+        case 'PATCH_MIXED_MAILBOX_QUEUE': {
+          const entries = await patchMixedMailboxQueue(message.payload?.entries || []);
+          return { ok: true, entries };
         }
 
         case 'UPSERT_PAYPAL_ACCOUNT': {

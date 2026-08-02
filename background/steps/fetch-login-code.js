@@ -11,6 +11,7 @@
       CLOUD_MAIL_PROVIDER = 'cloudmail',
       FREEMAIL_PROVIDER = 'freemail',
       ICLOUD_API_PROVIDER = 'icloud-api',
+      ICLOUD_URL_PROVIDER = 'icloud-url',
       MOEMAIL_PROVIDER = 'moemail',
       YYDSMAIL_PROVIDER = 'yydsmail',
       OUTLOOK_EMAIL_PLUS_PROVIDER = 'outlook-email-plus',
@@ -420,7 +421,7 @@
       if (mail?.provider === LUCKMAIL_PROVIDER) {
         return 15000;
       }
-      if (mail?.provider === HOTMAIL_PROVIDER || mail?.provider === ICLOUD_API_PROVIDER || mail?.provider === '2925') {
+      if (mail?.provider === HOTMAIL_PROVIDER || mail?.provider === ICLOUD_API_PROVIDER || mail?.provider === ICLOUD_URL_PROVIDER || mail?.provider === '2925') {
         return 0;
       }
       return Math.max(0, Number(STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS) || 0);
@@ -614,6 +615,7 @@
       if (
         mail.provider === HOTMAIL_PROVIDER
         || mail.provider === ICLOUD_API_PROVIDER
+        || mail.provider === ICLOUD_URL_PROVIDER
         || mail.provider === LUCKMAIL_PROVIDER
         || mail.provider === CLOUDFLARE_TEMP_EMAIL_PROVIDER
         || mail.provider === CLOUD_MAIL_PROVIDER
@@ -667,7 +669,7 @@
         pollAttemptPlan: mail.provider === '2925' ? [2, 3, 15] : undefined,
         resendIntervalMs: mail.provider === LUCKMAIL_PROVIDER
           ? 15000
-          : ((mail.provider === HOTMAIL_PROVIDER || mail.provider === ICLOUD_API_PROVIDER || mail.provider === '2925')
+          : ((mail.provider === HOTMAIL_PROVIDER || mail.provider === ICLOUD_API_PROVIDER || mail.provider === ICLOUD_URL_PROVIDER || mail.provider === '2925')
             ? 0
             : STANDARD_MAIL_VERIFICATION_RESEND_INTERVAL_MS),
       });

@@ -14,6 +14,7 @@
       CLOUD_MAIL_PROVIDER = 'cloudmail',
       FREEMAIL_PROVIDER = 'freemail',
       ICLOUD_API_PROVIDER = 'icloud-api',
+      ICLOUD_URL_PROVIDER = 'icloud-url',
       MOEMAIL_PROVIDER = 'moemail',
       YYDSMAIL_PROVIDER = 'yydsmail',
       OUTLOOK_EMAIL_PLUS_PROVIDER = 'outlook-email-plus',
@@ -35,6 +36,7 @@
       pollCloudMailVerificationCode,
       pollFreemailVerificationCode,
       pollIcloudApiVerificationCode,
+      pollIcloudUrlVerificationCode,
       pollMoemailVerificationCode,
       pollYydsMailVerificationCode,
       pollOutlookEmailPlusVerificationCode,
@@ -1022,6 +1024,13 @@
           ...cleanPollOverrides,
         }, cleanPollOverrides, `轮询${getVerificationCodeLabel(step)}验证码邮箱`);
         return pollIcloudApiVerificationCode(step, state, timedPoll.payload);
+      }
+      if (mail.provider === ICLOUD_URL_PROVIDER) {
+        const timedPoll = await applyMailPollingTimeBudget(step, {
+          ...getVerificationPollPayload(step, state),
+          ...cleanPollOverrides,
+        }, cleanPollOverrides, `轮询${getVerificationCodeLabel(step)}验证码邮箱`);
+        return pollIcloudUrlVerificationCode(step, state, timedPoll.payload);
       }
       if (mail.provider === OUTLOOK_EMAIL_PLUS_PROVIDER) {
         const timedPoll = await applyMailPollingTimeBudget(step, {
