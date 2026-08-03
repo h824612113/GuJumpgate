@@ -6,7 +6,9 @@
 
 ```text
 outlook@example.com----密码----客户端ID----刷新令牌
-bismuth.quizzes.7u@icloud.com----https://icloud-api.top/show/令牌/bismuth.quizzes.7u@icloud.com
+alias@icloud.com----https://icloud-api.top/show/令牌/alias@icloud.com
+second@icloud.com----http://yangyang.website/messages/
+合成令牌/second@icloud.com
 ```
 
 自动运行必须根据当前队列条目切换收码实现，不要求用户手动切换邮箱服务。现有 Outlook 账号池、自定义纯邮箱池和其他邮件提供商保持兼容。
@@ -51,19 +53,25 @@ bismuth.quizzes.7u@icloud.com----https://icloud-api.top/show/令牌/bismuth.quiz
 
 ## 导入识别
 
-导入器按行处理，允许两种格式混排：
+导入器按记录处理，允许两种格式混排：
 
-1. 第一段是合法邮箱，余下内容以 `https://` 开头时识别为 `icloud-url`。
+1. 第一段是合法邮箱，余下内容以 `http://` 或 `https://` 开头时识别为 `icloud-url`。
 2. 否则按四段 `邮箱----密码----客户端ID----刷新令牌` 识别为 `outlook`。
-3. 空行和已知表头被忽略。
-4. 无效行不阻止有效行导入，结果必须报告成功数、更新数、跳过数和具体错误行。
+3. 当一行以 `邮箱----http://yangyang.website/messages/` 结束时，下一条非空行作为 URL 路径续行拼接；续行必须只包含 `token/邮箱`，不能继续跨越第三行。
+4. 空行和已知表头被忽略；URL 续行前后的缩进会被去除。
+5. 无效记录不阻止有效记录导入，结果必须报告成功数、更新数、跳过数和原始起始行号。
 
-iCloud URL 第一版只接受：
+iCloud URL 仅接受以下白名单形态：
 
-- `https:` 协议；
-- 主机名 `icloud-api.top`；
-- 路径以 `/show/` 开始；
+- `https://icloud-api.top/show/{token}/{邮箱}`；
+- `http://yangyang.website/messages/{token}/{邮箱}`。
+
+共同约束：
+
+- 协议、主机和路径前缀必须与白名单完全匹配，不允许任意 HTTP 主机；
+- token 必须是单个非空路径段；
 - URL 最后一段解码后与导入邮箱一致。
+- 不跟随跳转到白名单之外的主机；HTTP 响应经过公网明文传输，界面和文档必须明确提示安全风险。
 
 ## 界面
 
@@ -105,6 +113,7 @@ iCloud URL 第一版只接受：
 - 只接受成功 HTTP 状态；
 - 不记录完整请求 URL；
 - 支持 JSON、HTML 和纯文本响应。
+- 对 `yangyang.website` 允许 HTTP，但最终响应 URL 仍必须保持同一白名单主机和 `/messages/` 路径前缀。
 
 响应解析顺序：
 
@@ -119,7 +128,8 @@ iCloud URL 第一版只接受：
 ## 错误处理
 
 - 导入错误包含行号，但敏感字段使用固定占位符。
-- URL 协议、主机、路径或邮箱不匹配时拒绝导入。
+- URL 协议、主机、路径、token 或邮箱不匹配时拒绝导入。
+- 孤立续行、超过一行的续接、续行包含 `----` 或完整 URL 时拒绝导入，并把错误定位到记录起始行。
 - Outlook 字段不足时沿用现有四段格式错误说明。
 - 取信请求的超时、401、403、404、429 和 5xx 转换为可识别错误，不输出 token。
 - 响应无法解析或未找到验证码时继续当前轮询窗口；窗口耗尽后记录异常并停止批次。
@@ -138,10 +148,12 @@ iCloud URL 第一版只接受：
 
 - Outlook 四段格式解析；
 - iCloud URL 两段格式解析；
+- `yangyang.website/messages/` 单行与两行续接格式解析；
 - 两种格式混排后顺序保持；
 - 表头、空行、无效行和部分成功导入；
 - 重复导入更新但不改变位置；
 - URL 协议、主机、路径和邮箱校验；
+- HTTP 仅对白名单主机放行，其他 HTTP URL 继续拒绝；
 - 敏感值脱敏；
 - JSON、HTML、纯文本验证码提取；
 - `excludeCodes` 生效；
