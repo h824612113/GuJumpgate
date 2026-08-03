@@ -12,6 +12,10 @@
   const DEFAULT_MAX_ATTEMPTS = 5;
   const DEFAULT_INTERVAL_MS = 3000;
   const DEFAULT_TIMEOUT_MS = 15000;
+  const MAILBOX_URL_RULES = [
+    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: '/show/' },
+    { protocol: 'http:', hostname: 'yangyang.website', pathPrefix: '/messages/' },
+  ];
 
   function normalizeCode(value = '') {
     const code = String(value || '').trim();
@@ -148,6 +152,51 @@
     return text;
   }
 
+  function parseTrustedMailboxUrl(rawUrl, requireCredentialShape = false) {
+    let parsed;
+    try {
+      parsed = new URL(String(rawUrl || '').trim());
+    } catch {
+      return null;
+    }
+    if (parsed.username || parsed.password || parsed.port) return null;
+
+    const rule = MAILBOX_URL_RULES.find((candidate) => (
+      parsed.protocol === candidate.protocol
+      && parsed.hostname.toLowerCase() === candidate.hostname
+      && parsed.pathname.startsWith(candidate.pathPrefix)
+    ));
+    if (!rule) return null;
+
+    if (requireCredentialShape) {
+      if (parsed.search || parsed.hash) return null;
+      const pathSegments = parsed.pathname.split('/').slice(1);
+      const expectedPrefix = rule.pathPrefix.split('/').filter(Boolean)[0];
+      if (
+        pathSegments.length !== 3
+        || pathSegments[0] !== expectedPrefix
+        || !pathSegments[1]
+        || !pathSegments[2]
+      ) {
+        return null;
+      }
+    }
+
+    return { parsed, rule };
+  }
+
+  function validateMailboxResponseUrl(requestUrl, responseUrl) {
+    const request = parseTrustedMailboxUrl(requestUrl, true);
+    if (!request) {
+      throw new Error('iCloud URL 取信地址不受信任。');
+    }
+
+    const finalResponse = parseTrustedMailboxUrl(responseUrl || requestUrl, false);
+    if (!finalResponse || finalResponse.rule !== request.rule) {
+      throw new Error('iCloud URL 响应地址不受信任。');
+    }
+  }
+
   function createIcloudUrlProvider(deps = {}) {
     const fetchImpl = deps.fetchImpl || globalThis.fetch;
     const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
@@ -155,6 +204,9 @@
     const addLog = deps.addLog || (async () => {});
 
     async function requestMailbox(url, timeoutMs) {
+      if (!parseTrustedMailboxUrl(url, true)) {
+        throw new Error('iCloud URL 取信地址不受信任。');
+      }
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const timer = controller
         ? setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS))
@@ -166,6 +218,7 @@
           cache: 'no-store',
           signal: controller?.signal,
         });
+        validateMailboxResponseUrl(url, response.url);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }

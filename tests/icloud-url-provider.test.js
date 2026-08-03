@@ -55,3 +55,133 @@ test('polls the credential URL until a fresh code appears without logging its to
   assert.equal(requests[0].options.credentials, 'omit');
   assert.equal(logs.join('\n').includes('sensitive-token'), false);
 });
+
+test('accepts a yangyang response that remains under the messages path', async () => {
+  const entry = {
+    id: 'yangyang-one',
+    type: 'icloud-url',
+    email: 'alias@icloud.com',
+    url: 'http://yangyang.website/messages/token-a/alias@icloud.com',
+    enabled: true,
+    used: false,
+  };
+  const fetchImpl = async () => ({
+    ok: true,
+    status: 200,
+    url: 'http://yangyang.website/messages/inbox',
+    headers: { get: () => 'text/plain' },
+    text: async () => 'code: 456789',
+  });
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl,
+    sleep: async () => {},
+    throwIfStopped() {},
+  });
+
+  const result = await api.pollVerificationCode(4, {
+    activeMixedMailboxEntry: entry,
+  }, {
+    maxAttempts: 1,
+  });
+
+  assert.equal(result.code, '456789');
+});
+
+test('rejects redirected responses outside the original mailbox boundary before reading content', async () => {
+  const scenarios = [
+    {
+      requestUrl: 'http://yangyang.website/messages/private-token/alias@icloud.com',
+      responseUrl: 'http://example.com/messages/inbox',
+    },
+    {
+      requestUrl: 'http://yangyang.website/messages/private-token/alias@icloud.com',
+      responseUrl: 'https://yangyang.website/messages/inbox',
+    },
+    {
+      requestUrl: 'http://yangyang.website/messages/private-token/alias@icloud.com',
+      responseUrl: 'http://yangyang.website/login',
+    },
+    {
+      requestUrl: 'http://yangyang.website/messages/private-token/alias@icloud.com',
+      responseUrl: 'http://yangyang.website/messages-extra/inbox',
+    },
+    {
+      requestUrl: 'https://icloud-api.top/show/private-token/alias@icloud.com',
+      responseUrl: 'http://yangyang.website/messages/inbox',
+    },
+  ];
+
+  for (const scenario of scenarios) {
+    let bodyRead = false;
+    const logs = [];
+    const api = provider.createIcloudUrlProvider({
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        url: scenario.responseUrl,
+        headers: { get: () => 'text/plain' },
+        text: async () => {
+          bodyRead = true;
+          return 'code: 456789';
+        },
+      }),
+      sleep: async () => {},
+      throwIfStopped() {},
+      addLog: async (message) => logs.push(message),
+    });
+
+    await assert.rejects(
+      api.pollVerificationCode(4, {
+        activeMixedMailboxEntry: {
+          type: 'icloud-url',
+          email: 'alias@icloud.com',
+          url: scenario.requestUrl,
+        },
+      }, {
+        maxAttempts: 1,
+      }),
+      (error) => {
+        assert.match(error.message, /响应地址不受信任/);
+        assert.equal(error.message.includes('private-token'), false);
+        return true;
+      }
+    );
+
+    assert.equal(bodyRead, false);
+    assert.equal(logs.join('\n').includes('private-token'), false);
+  }
+});
+
+test('rejects an untrusted request URL before fetch without exposing its token', async () => {
+  let fetchCalled = false;
+  const logs = [];
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl: async () => {
+      fetchCalled = true;
+      throw new Error('fetch should not run');
+    },
+    sleep: async () => {},
+    throwIfStopped() {},
+    addLog: async (message) => logs.push(message),
+  });
+
+  await assert.rejects(
+    api.pollVerificationCode(4, {
+      activeMixedMailboxEntry: {
+        type: 'icloud-url',
+        email: 'alias@icloud.com',
+        url: 'http://example.com/messages/private-token/alias@icloud.com',
+      },
+    }, {
+      maxAttempts: 1,
+    }),
+    (error) => {
+      assert.match(error.message, /取信地址不受信任/);
+      assert.equal(error.message.includes('private-token'), false);
+      return true;
+    }
+  );
+
+  assert.equal(fetchCalled, false);
+  assert.equal(logs.join('\n').includes('private-token'), false);
+});
