@@ -167,19 +167,24 @@ macOS 首次运行如提示没有权限，可在终端进入解压目录后执�
 
 ##### Outlook / iCloud URL 统一邮箱队列
 
-当 `邮箱服务` 选择 Hotmail / Outlook 时，`邮箱生成` 可以切换为 `统一邮箱队列`。同一个导入框支持混合粘贴以下两种记录，每行一条：
+当 `邮箱服务` 选择 Hotmail / Outlook 时，`邮箱生成` 可以切换为 `统一邮箱队列`。同一个导入框支持混合粘贴 Outlook 和两种受控 iCloud URL 记录：
 
 ```text
 outlook@example.com----邮箱密码----客户端ID----刷新令牌
 alias@icloud.com----https://icloud-api.top/show/取信令牌/alias@icloud.com
+second@icloud.com----http://yangyang.website/messages/
+取信令牌/second@icloud.com
 ```
 
 - Outlook 与 iCloud URL 记录可以任意混排，导入后会保留原始顺序。
+- `yangyang.website` 既支持上面的两行格式，也支持把完整 URL 放在同一行；两行格式只会读取下一条非空行，续行必须严格为 `取信令牌/邮箱`。
+- URL 仅允许 `https://icloud-api.top/show/...` 和 `http://yangyang.website/messages/...` 两个精确白名单，不接受其他 HTTP 主机或路径。
 - 自动运行次数会锁定为当前启用且未使用的队列条目数。
 - 每轮按队列顺序选择一条邮箱，并自动切换 Outlook Graph 或 iCloud URL 收码。
 - 只有完整注册流程成功后，当前条目才会标记为已用。
 - 当前条目失败时会停止整批任务，不会自动跳到下一条；失败条目保持未用，修复后可继续重试。
 - iCloud 取信 URL、Outlook 密码、客户端 ID 和刷新令牌都属于敏感凭据。不要截图、公开分享或粘贴到日志、Issue 和聊天记录中；配置导出文件也应按密码文件保管。
+- `yangyang.website` 使用明文 HTTP，请求路径中的邮箱和取信令牌可能被网络中间节点看到，只应在可信网络环境中使用。程序会校验最终响应仍位于原白名单主机和路径，但这不能替代 HTTPS 的传输加密。
 
 #### PP 爆破模式
 
