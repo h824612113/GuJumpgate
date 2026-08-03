@@ -12,6 +12,10 @@
   const OUTLOOK_TYPE = 'outlook';
   const ICLOUD_URL_TYPE = 'icloud-url';
   const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const ICLOUD_URL_RULES = [
+    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 'show' },
+    { protocol: 'http:', hostname: 'yangyang.website', pathPrefix: 'messages' },
+  ];
 
   function normalizeEmail(value = '') {
     return String(value || '').trim().toLowerCase();
@@ -25,26 +29,66 @@
       return { ok: false, error: 'iCloud URL 格式无效。' };
     }
 
-    if (parsed.protocol !== 'https:') {
-      return { ok: false, error: 'iCloud URL 必须使用 HTTPS。' };
-    }
-    if (parsed.hostname.toLowerCase() !== 'icloud-api.top') {
-      return { ok: false, error: 'iCloud URL 主机必须是 icloud-api.top。' };
-    }
-    if (!parsed.pathname.startsWith('/show/')) {
-      return { ok: false, error: 'iCloud URL 路径必须以 /show/ 开始。' };
+    if (parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash) {
+      return { ok: false, error: 'iCloud URL 不能包含登录信息、端口、查询参数或片段。' };
     }
 
+    const rule = ICLOUD_URL_RULES.find((candidate) => (
+      parsed.protocol === candidate.protocol
+      && parsed.hostname.toLowerCase() === candidate.hostname
+    ));
+    if (!rule) {
+      return { ok: false, error: 'iCloud URL 不在允许的协议和主机白名单中。' };
+    }
     const pathSegments = parsed.pathname.split('/').slice(1);
-    if (pathSegments.length !== 3 || pathSegments[0] !== 'show' || !pathSegments[1]) {
+    if (
+      pathSegments.length !== 3
+      || pathSegments[0] !== rule.pathPrefix
+      || !pathSegments[1]
+      || !pathSegments[2]
+    ) {
       return { ok: false, error: 'iCloud URL 缺少有效取信令牌。' };
     }
-    const pathEmail = normalizeEmail(decodeURIComponent(pathSegments[2] || ''));
+    let pathEmail = '';
+    try {
+      pathEmail = normalizeEmail(decodeURIComponent(pathSegments[2]));
+    } catch {
+      return { ok: false, error: 'iCloud URL 尾部邮箱格式无效。' };
+    }
     if (pathEmail !== email) {
       return { ok: false, error: 'iCloud URL 尾部邮箱与导入邮箱不一致。' };
     }
 
     return { ok: true, url: parsed.toString() };
+  }
+
+  function isYangyangContinuationStart(line) {
+    const raw = String(line || '').trim();
+    const separatorIndex = raw.indexOf('----');
+    if (separatorIndex < 0) return false;
+    const credentialPart = raw.slice(separatorIndex + 4).trim();
+    try {
+      const parsed = new URL(credentialPart);
+      return parsed.protocol === 'http:'
+        && parsed.hostname.toLowerCase() === 'yangyang.website'
+        && !parsed.username
+        && !parsed.password
+        && !parsed.port
+        && !parsed.search
+        && !parsed.hash
+        && parsed.pathname === '/messages/';
+    } catch {
+      return false;
+    }
+  }
+
+  function isValidYangyangContinuation(value) {
+    const continuation = String(value || '').trim();
+    if (!continuation || continuation.includes('----') || /^https?:\/\//i.test(continuation)) {
+      return false;
+    }
+    const segments = continuation.split('/');
+    return segments.length === 2 && segments.every(Boolean);
   }
 
   function parseMixedMailboxLine(line, lineNumber) {
@@ -97,21 +141,48 @@
     let ignoredCount = 0;
     const lines = String(value || '').split(/\r?\n/);
 
-    lines.forEach((line, index) => {
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index];
       const trimmed = String(line || '').trim();
       if (!trimmed) {
         ignoredCount += 1;
-        return;
+        continue;
       }
       if (/^(?:账号|邮箱)----(?:密码|取信URL)/i.test(trimmed)) {
         ignoredCount += 1;
-        return;
+        continue;
+      }
+
+      if (isYangyangContinuationStart(trimmed)) {
+        const startLineNumber = index + 1;
+        let continuationIndex = index + 1;
+        while (continuationIndex < lines.length && !String(lines[continuationIndex] || '').trim()) {
+          ignoredCount += 1;
+          continuationIndex += 1;
+        }
+
+        if (continuationIndex >= lines.length) {
+          errors.push({ lineNumber: startLineNumber, message: 'iCloud URL 缺少下一行取信令牌和邮箱。' });
+          continue;
+        }
+
+        const continuation = String(lines[continuationIndex] || '').trim();
+        index = continuationIndex;
+        if (!isValidYangyangContinuation(continuation)) {
+          errors.push({ lineNumber: startLineNumber, message: 'iCloud URL 续行必须为令牌/邮箱。' });
+          continue;
+        }
+
+        const result = parseMixedMailboxLine(`${trimmed}${continuation}`, startLineNumber);
+        if (result.record) records.push(result.record);
+        if (result.error) errors.push(result.error);
+        continue;
       }
 
       const result = parseMixedMailboxLine(trimmed, index + 1);
       if (result.record) records.push(result.record);
       if (result.error) errors.push(result.error);
-    });
+    }
 
     return { records, errors, ignoredCount };
   }

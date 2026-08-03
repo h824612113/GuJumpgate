@@ -33,6 +33,104 @@ test('rejects iCloud URLs without a mailbox token segment', () => {
   assert.equal(result.errors[0].lineNumber, 1);
 });
 
+test('parses yangyang single-line and continuation records in original order', () => {
+  const result = utils.parseMixedMailboxImport([
+    'first@outlook.com----password----client-id----refresh-token',
+    'second@icloud.com----http://yangyang.website/messages/token-a/second@icloud.com',
+    'third@icloud.com----http://yangyang.website/messages/',
+    '',
+    '  token-b/third@icloud.com  ',
+    'fourth@icloud.com----https://icloud-api.top/show/token-c/fourth@icloud.com',
+  ].join('\n'));
+
+  assert.deepEqual(result.records.map(({ type, email }) => ({ type, email })), [
+    { type: 'outlook', email: 'first@outlook.com' },
+    { type: 'icloud-url', email: 'second@icloud.com' },
+    { type: 'icloud-url', email: 'third@icloud.com' },
+    { type: 'icloud-url', email: 'fourth@icloud.com' },
+  ]);
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.records[2].url, 'http://yangyang.website/messages/token-b/third@icloud.com');
+});
+
+test('rejects mailbox URLs outside the exact protocol host and path allowlist', () => {
+  const cases = [
+    'a@icloud.com----http://icloud-api.top/show/token/a@icloud.com',
+    'a@icloud.com----https://yangyang.website/messages/token/a@icloud.com',
+    'a@icloud.com----http://example.com/messages/token/a@icloud.com',
+    'a@icloud.com----http://yangyang.website/show/token/a@icloud.com',
+    'a@icloud.com----http://yangyang.website/messages-extra/token/a@icloud.com',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
+test('rejects mailbox URLs with credentials ports queries or fragments', () => {
+  const cases = [
+    'a@icloud.com----https://user:pass@icloud-api.top/show/token/a@icloud.com',
+    'a@icloud.com----https://icloud-api.top:444/show/token/a@icloud.com',
+    'a@icloud.com----https://icloud-api.top/show/token/a@icloud.com?view=1',
+    'a@icloud.com----https://icloud-api.top/show/token/a@icloud.com#latest',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
+test('rejects invalid yangyang tokens and mismatched mailbox paths', () => {
+  const cases = [
+    'a@icloud.com----http://yangyang.website/messages//a@icloud.com',
+    'a@icloud.com----http://yangyang.website/messages/token/extra/a@icloud.com',
+    'a@icloud.com----http://yangyang.website/messages/token/b@icloud.com',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
+test('reports malformed yangyang continuations against the record start line', () => {
+  const continuations = [
+    'https://yangyang.website/messages/token/a@icloud.com',
+    'token----a@icloud.com',
+    'token/extra/a@icloud.com',
+    'token/b@icloud.com',
+  ];
+
+  for (const continuation of continuations) {
+    const result = utils.parseMixedMailboxImport([
+      'valid@outlook.com----password----client-id----refresh-token',
+      'a@icloud.com----http://yangyang.website/messages/',
+      '',
+      continuation,
+    ].join('\n'));
+    assert.equal(result.records[0].email, 'valid@outlook.com');
+    assert.equal(result.records.some((record) => record.email === 'a@icloud.com'), false);
+    assert.equal(result.errors[0].lineNumber, 2);
+  }
+});
+
+test('rejects a missing or isolated yangyang continuation', () => {
+  const missing = utils.parseMixedMailboxImport(
+    'a@icloud.com----http://yangyang.website/messages/'
+  );
+  assert.equal(missing.records.length, 0);
+  assert.equal(missing.errors[0].lineNumber, 1);
+
+  const isolated = utils.parseMixedMailboxImport('token/a@icloud.com');
+  assert.equal(isolated.records.length, 0);
+  assert.equal(isolated.errors[0].lineNumber, 1);
+});
+
 test('updates duplicate credentials without moving the queue item', () => {
   const existing = [
     {
