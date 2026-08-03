@@ -177,6 +177,7 @@ second@icloud.com----http://yangyang.website/messages/
 ```
 
 - Outlook 与 iCloud URL 记录可以任意混排，导入后会保留原始顺序。
+- Hotmail / Outlook 设置区原有的“批量导入”输入框也会识别 URL 记录，并自动将整批内容导入统一邮箱队列。
 - `yangyang.website` 既支持上面的两行格式，也支持把完整 URL 放在同一行；两行格式只会读取下一条非空行，续行必须严格为 `取信令牌/邮箱`。
 - URL 仅允许 `https://icloud-api.top/show/...` 和 `http://yangyang.website/messages/...` 两个精确白名单，不接受其他 HTTP 主机或路径。
 - 自动运行次数会锁定为当前启用且未使用的队列条目数。

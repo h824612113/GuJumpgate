@@ -7,6 +7,7 @@
       runtime,
       constants = {},
       hotmailUtils = {},
+      mixedMailboxUtils = {},
     } = context;
 
     const expandedStorageKey = constants.expandedStorageKey || 'multipage-hotmail-list-expanded';
@@ -416,6 +417,49 @@
       const rawText = dom.inputHotmailImport.value.trim();
       if (!rawText) {
         helpers.showToast('请先粘贴账号导入内容。', 'warn');
+        return;
+      }
+
+      const hasMailboxUrlIntent = /----\s*https?:\/\//i.test(rawText);
+      if (hasMailboxUrlIntent) {
+        if (typeof mixedMailboxUtils.parseMixedMailboxImport !== 'function') {
+          helpers.showToast('统一邮箱导入解析器未加载，请刷新扩展后重试。', 'error');
+          return;
+        }
+
+        const parsedMixedMailbox = mixedMailboxUtils.parseMixedMailboxImport(rawText);
+        if (!parsedMixedMailbox.records.length) {
+          const firstError = parsedMixedMailbox.errors[0];
+          const lineLabel = firstError?.lineNumber ? `第 ${firstError.lineNumber} 行：` : '';
+          helpers.showToast(`没有解析到有效邮箱记录。${lineLabel}${firstError?.message || '请检查统一邮箱格式。'}`, 'error');
+          return;
+        }
+
+        actionInFlight = true;
+        dom.btnImportHotmailAccounts.disabled = true;
+        try {
+          const response = await runtime.sendMessage({
+            type: 'IMPORT_MIXED_MAILBOX_QUEUE',
+            source: 'sidepanel',
+            payload: { text: rawText },
+          });
+          if (response?.error) throw new Error(response.error);
+
+          await syncHotmailStateFromBackground();
+          await helpers.onMixedMailboxImported?.(response);
+          dom.inputHotmailImport.value = '';
+          const errorCount = Array.isArray(response?.errors) ? response.errors.length : 0;
+          helpers.showToast(
+            `已导入统一邮箱队列：新增 ${response?.addedCount || 0} 条，更新 ${response?.updatedCount || 0} 条${errorCount ? `，${errorCount} 行无效` : ''}`,
+            errorCount ? 'warn' : 'success',
+            2600
+          );
+        } catch (err) {
+          helpers.showToast(`统一邮箱批量导入失败：${err.message}`, 'error');
+        } finally {
+          actionInFlight = false;
+          dom.btnImportHotmailAccounts.disabled = false;
+        }
         return;
       }
 

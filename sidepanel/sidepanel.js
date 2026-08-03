@@ -15582,6 +15582,19 @@ const hotmailManager = window.SidepanelHotmailManager?.createHotmailManager({
     escapeHtml,
     getCurrentHotmailEmail,
     getHotmailAccounts,
+    onMixedMailboxImported: async (result) => {
+      syncLatestState({
+        mixedMailboxQueueEntries: Array.isArray(result?.entries) ? result.entries : [],
+      });
+      if (selectEmailGenerator) {
+        selectEmailGenerator.value = MIXED_EMAIL_POOL_GENERATOR;
+      }
+      updateMailProviderUI();
+      mixedMailboxQueueManager?.refresh();
+      syncRunCountFromConfiguredEmailPool();
+      markSettingsDirty(true);
+      await saveSettings({ silent: true });
+    },
     openConfirmModal,
     showToast,
   },
@@ -15601,6 +15614,7 @@ const hotmailManager = window.SidepanelHotmailManager?.createHotmailManager({
     shouldClearHotmailCurrentSelection,
     upsertHotmailAccountInList,
   },
+  mixedMailboxUtils: window.MixedMailboxUtils || {},
 });
 const initHotmailListExpandedState = hotmailManager?.initHotmailListExpandedState
   || (() => { });
