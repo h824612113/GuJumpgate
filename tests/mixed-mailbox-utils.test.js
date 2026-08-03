@@ -24,6 +24,15 @@ test('rejects non-HTTPS and mismatched iCloud URL email', () => {
   assert.deepEqual(result.errors.map((item) => item.lineNumber), [1, 2]);
 });
 
+test('rejects iCloud URLs without a mailbox token segment', () => {
+  const result = utils.parseMixedMailboxImport(
+    'alias@icloud.com----https://icloud-api.top/show//alias@icloud.com'
+  );
+
+  assert.equal(result.records.length, 0);
+  assert.equal(result.errors[0].lineNumber, 1);
+});
+
 test('updates duplicate credentials without moving the queue item', () => {
   const existing = [
     {
@@ -91,4 +100,40 @@ test('redacts mailbox secrets and resolves runtime providers', () => {
   assert.equal(utils.redactMixedMailboxSecret(secret).includes('sensitive-token'), false);
   assert.equal(utils.resolveMixedMailboxProvider({ type: 'outlook' }), 'hotmail-api');
   assert.equal(utils.resolveMixedMailboxProvider({ type: 'icloud-url' }), 'icloud-url');
+});
+
+test('sanitizes mixed mailbox state before it reaches diagnostic logs', () => {
+  const safePayload = utils.sanitizeMixedMailboxStateForLog({
+    emailGenerator: 'mixed-pool',
+    hotmailAccounts: [{
+      id: 'outlook-one',
+      email: 'a@outlook.com',
+      password: 'outlook-password',
+      clientId: 'outlook-client-id',
+      refreshToken: 'outlook-refresh-token',
+      used: false,
+    }],
+    mixedMailboxQueueEntries: [{
+      id: 'icloud-one',
+      type: 'icloud-url',
+      email: 'a@icloud.com',
+      credential: 'a@icloud.com----https://icloud-api.top/show/icloud-token/a@icloud.com',
+      url: 'https://icloud-api.top/show/icloud-token/a@icloud.com',
+      enabled: true,
+      used: false,
+    }],
+  });
+  const serialized = JSON.stringify(safePayload);
+
+  assert.equal(safePayload.emailGenerator, 'mixed-pool');
+  assert.equal(safePayload.hotmailAccounts[0].email, 'a@outlook.com');
+  assert.equal(safePayload.mixedMailboxQueueEntries[0].email, 'a@icloud.com');
+  for (const secret of [
+    'outlook-password',
+    'outlook-client-id',
+    'outlook-refresh-token',
+    'icloud-token',
+  ]) {
+    assert.equal(serialized.includes(secret), false);
+  }
 });

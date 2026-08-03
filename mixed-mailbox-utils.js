@@ -35,8 +35,11 @@
       return { ok: false, error: 'iCloud URL 路径必须以 /show/ 开始。' };
     }
 
-    const pathSegments = parsed.pathname.split('/').filter(Boolean);
-    const pathEmail = normalizeEmail(decodeURIComponent(pathSegments[pathSegments.length - 1] || ''));
+    const pathSegments = parsed.pathname.split('/').slice(1);
+    if (pathSegments.length !== 3 || pathSegments[0] !== 'show' || !pathSegments[1]) {
+      return { ok: false, error: 'iCloud URL 缺少有效取信令牌。' };
+    }
+    const pathEmail = normalizeEmail(decodeURIComponent(pathSegments[2] || ''));
     if (pathEmail !== email) {
       return { ok: false, error: 'iCloud URL 尾部邮箱与导入邮箱不一致。' };
     }
@@ -225,6 +228,36 @@
     }
   }
 
+  function sanitizeMixedMailboxStateForLog(value = {}) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      return value;
+    }
+
+    const sanitized = { ...value };
+    if (Array.isArray(value.hotmailAccounts)) {
+      sanitized.hotmailAccounts = value.hotmailAccounts.map((account = {}) => {
+        const {
+          password: _password,
+          clientId: _clientId,
+          refreshToken: _refreshToken,
+          ...safeAccount
+        } = account;
+        return safeAccount;
+      });
+    }
+    if (Array.isArray(value.mixedMailboxQueueEntries)) {
+      sanitized.mixedMailboxQueueEntries = value.mixedMailboxQueueEntries.map((entry = {}) => {
+        const {
+          credential: _credential,
+          url: _url,
+          ...safeEntry
+        } = entry;
+        return safeEntry;
+      });
+    }
+    return sanitized;
+  }
+
   function resolveMixedMailboxProvider(entry = {}) {
     const type = String(entry?.type || '').trim().toLowerCase();
     if (type === OUTLOOK_TYPE) return 'hotmail-api';
@@ -241,5 +274,6 @@
     parseMixedMailboxImport,
     redactMixedMailboxSecret,
     resolveMixedMailboxProvider,
+    sanitizeMixedMailboxStateForLog,
   };
 });

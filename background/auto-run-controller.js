@@ -30,6 +30,7 @@
       isGpcTaskEndedFailure,
       isHostedCheckoutGenericErrorFailure,
       isHostedCheckoutVerificationResendLimitFailure,
+      isMixedMailboxGenerator,
       isPhoneSmsPlatformRateLimitFailure,
       isPlusCheckoutNonFreeTrialFailure,
       isRestartCurrentAttemptError,
@@ -38,6 +39,9 @@
       isStopError,
       launchAutoRunTimerPlan,
       normalizeAutoRunFallbackThreadIntervalMinutes,
+      prepareMixedMailboxRunForAutoRound,
+      markActiveMixedMailboxEntryError,
+      markActiveMixedMailboxEntryUsed,
       persistAutoRunTimerPlan,
       resetState,
       runAutoSequenceFromNode,
@@ -465,9 +469,12 @@
       });
       currentRuntime = runtime.get();
 
-      const autoRunSkipFailures = Boolean(options.autoRunSkipFailures);
-      const autoRunRetryNonFreeTrial = Boolean(options.autoRunRetryNonFreeTrial);
-      const autoRunRetryPaypalCallback = Boolean(options.autoRunRetryPaypalCallback);
+      const autoRunStartState = await getState();
+      const mixedMailboxMode = typeof isMixedMailboxGenerator === 'function'
+        && isMixedMailboxGenerator(autoRunStartState);
+      const autoRunSkipFailures = mixedMailboxMode ? false : Boolean(options.autoRunSkipFailures);
+      const autoRunRetryNonFreeTrial = mixedMailboxMode ? false : Boolean(options.autoRunRetryNonFreeTrial);
+      const autoRunRetryPaypalCallback = mixedMailboxMode ? false : Boolean(options.autoRunRetryPaypalCallback);
       const initialMode = options.mode === 'continue' ? 'continue' : 'restart';
       const resumeCurrentRun = Number.isInteger(options.resumeCurrentRun) && options.resumeCurrentRun > 0
         ? Math.min(totalRuns, options.resumeCurrentRun)
@@ -593,6 +600,8 @@
               signupMethod: prevState.signupMethod,
               mailProvider: prevState.mailProvider,
               emailGenerator: prevState.emailGenerator,
+              mixedMailboxQueueEntries: prevState.mixedMailboxQueueEntries,
+              activeMixedMailboxEntryId: null,
               gmailBaseEmail: prevState.gmailBaseEmail,
               mail2925BaseEmail: prevState.mail2925BaseEmail,
               currentMail2925AccountId: prevState.currentMail2925AccountId,
@@ -656,7 +665,17 @@
               sessionId,
             });
 
-            if (!useExistingProgress && startNodeId === defaultStartNodeId && typeof ensureHotmailMailboxReadyForAutoRunRound === 'function') {
+            if (mixedMailboxMode && typeof prepareMixedMailboxRunForAutoRound === 'function') {
+              await prepareMixedMailboxRunForAutoRound({
+                targetRun,
+                totalRuns,
+                attemptRun,
+                sessionId,
+                useExistingProgress,
+              });
+            }
+
+            if (!mixedMailboxMode && !useExistingProgress && startNodeId === defaultStartNodeId && typeof ensureHotmailMailboxReadyForAutoRunRound === 'function') {
               await ensureHotmailMailboxReadyForAutoRunRound({
                 targetRun,
                 totalRuns,
@@ -671,6 +690,10 @@
               attemptRuns: attemptRun,
               continued: useExistingProgress,
             });
+
+            if (mixedMailboxMode && typeof markActiveMixedMailboxEntryUsed === 'function') {
+              await markActiveMixedMailboxEntryUsed();
+            }
 
             roundSummary.status = 'success';
             roundSummary.finalFailureReason = '';
@@ -692,6 +715,10 @@
                 sessionId: 0,
               });
               break;
+            }
+
+            if (mixedMailboxMode && typeof markActiveMixedMailboxEntryError === 'function') {
+              await markActiveMixedMailboxEntryError(err);
             }
 
             const reason = getErrorMessage(err);
@@ -727,13 +754,16 @@
             const blockedByStep4Route405 = typeof isStep4Route405RecoveryLimitFailure === 'function'
               && isStep4Route405RecoveryLimitFailure(err);
             const maxPlusNonFreeTrialAttempts = AUTO_RUN_MAX_RETRIES_PER_ROUND + 1;
-            const retryablePlusNonFreeTrial = blockedByPlusNonFreeTrial
+            const retryablePlusNonFreeTrial = !mixedMailboxMode
+              && blockedByPlusNonFreeTrial
               && autoRunRetryNonFreeTrial
               && attemptRun < maxPlusNonFreeTrialAttempts;
-            const retryableHostedCheckoutGenericError = blockedByHostedCheckoutGenericError
+            const retryableHostedCheckoutGenericError = !mixedMailboxMode
+              && blockedByHostedCheckoutGenericError
               && autoRunRetryPaypalCallback
               && attemptRun < maxPlusNonFreeTrialAttempts;
-            const retryableHostedCheckoutCardFallback = blockedByHostedCheckoutCardFallback
+            const retryableHostedCheckoutCardFallback = !mixedMailboxMode
+              && blockedByHostedCheckoutCardFallback
               && attemptRun < maxPlusNonFreeTrialAttempts;
             const canRetry = !blockedByAddPhone
               && !blockedByPhoneNoSupply

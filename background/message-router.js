@@ -169,6 +169,7 @@
       setCurrentPayPalAccount,
       setCurrentMail2925Account,
       setCurrentHotmailAccount,
+      setActiveMixedMailboxEntry,
       setContributionMode,
       setEmailState,
       setEmailStateSilently,
@@ -2173,6 +2174,17 @@
         case 'PATCH_MIXED_MAILBOX_QUEUE': {
           const entries = await patchMixedMailboxQueue(message.payload?.entries || []);
           return { ok: true, entries };
+        }
+
+        case 'SET_ACTIVE_MIXED_MAILBOX_ENTRY': {
+          const state = await getState();
+          if (isAutoRunLockedState(state)) {
+            throw new Error('自动流程运行中，当前不能切换统一邮箱队列条目。');
+          }
+          return {
+            ok: true,
+            ...(await setActiveMixedMailboxEntry(String(message.payload?.entryId || ''))),
+          };
         }
 
         case 'UPSERT_PAYPAL_ACCOUNT': {

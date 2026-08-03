@@ -18,6 +18,20 @@
     return utils?.normalizeMixedMailboxQueueEntries?.(entries) || [];
   }
 
+  function buildMixedMailboxStateDefaults() {
+    return {
+      persisted: { mixedMailboxQueueEntries: [] },
+      runtime: { activeMixedMailboxEntryId: null },
+    };
+  }
+
+  function buildMixedMailboxImportRuntimeResetPatch() {
+    return {
+      activeMixedMailboxEntryId: null,
+      currentHotmailAccountId: null,
+    };
+  }
+
   function getActiveMixedMailboxEntry(state = {}) {
     const entries = normalizeEntries(state?.mixedMailboxQueueEntries);
     const activeId = String(state?.activeMixedMailboxEntryId || '').trim();
@@ -87,6 +101,8 @@
 
   return {
     MIXED_POOL_GENERATOR,
+    buildMixedMailboxImportRuntimeResetPatch,
+    buildMixedMailboxStateDefaults,
     getActiveMixedMailboxEntry,
     markMixedMailboxEntryError,
     markMixedMailboxEntryUsed,

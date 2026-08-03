@@ -52,3 +52,16 @@ test('marks success used and failure unused without changing queue order', () =>
   assert.equal(failure[1].used, false);
   assert.equal(failure[1].lastError, 'HTTP 403');
 });
+
+test('separates the persisted queue from active runtime selection state', () => {
+  const defaults = runtime.buildMixedMailboxStateDefaults();
+  const importReset = runtime.buildMixedMailboxImportRuntimeResetPatch();
+
+  assert.deepEqual(defaults.persisted, { mixedMailboxQueueEntries: [] });
+  assert.deepEqual(defaults.runtime, { activeMixedMailboxEntryId: null });
+  assert.deepEqual(importReset, {
+    activeMixedMailboxEntryId: null,
+    currentHotmailAccountId: null,
+  });
+  assert.equal(Object.hasOwn(importReset, 'mixedMailboxQueueEntries'), false);
+});

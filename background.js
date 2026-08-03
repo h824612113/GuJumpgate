@@ -576,6 +576,10 @@ const OUTLOOK_EMAIL_PLUS_PROVIDER = 'outlook-email-plus';
 const OUTLOOK_EMAIL_PLUS_GENERATOR = 'outlook-email-plus';
 const CUSTOM_EMAIL_POOL_GENERATOR = 'custom-pool';
 const MIXED_EMAIL_POOL_GENERATOR = 'mixed-pool';
+const MIXED_MAILBOX_STATE_DEFAULTS = self.MixedMailboxRuntime?.buildMixedMailboxStateDefaults?.() || {
+  persisted: { mixedMailboxQueueEntries: [] },
+  runtime: { activeMixedMailboxEntryId: null },
+};
 const HOTMAIL_MAILBOXES = ['INBOX', 'Junk'];
 const STOP_ERROR_MESSAGE = '流程已被用户停止。';
 const CLOUDFLARE_SECURITY_BLOCK_ERROR_PREFIX = 'CF_SECURITY_BLOCKED::';
@@ -1268,7 +1272,7 @@ const PERSISTED_SETTING_DEFAULTS = {
   customMailProviderPool: [],
   customEmailPool: [],
   customEmailPoolEntries: [],
-  mixedMailboxQueueEntries: [],
+  ...MIXED_MAILBOX_STATE_DEFAULTS.persisted,
   autoDeleteUsedIcloudAlias: false,
   icloudHostPreference: 'auto',
   icloudTargetMailboxType: 'icloud-inbox',
@@ -1541,6 +1545,7 @@ const DEFAULT_STATE = {
   password: null, // 运行时实际密码，由 customPassword 或程序自动生成后写入。
   accounts: [], // 已生成账号记录：{ email, password, createdAt }。
   accountRunHistory: [], // 账号运行历史快照，实际持久化在 chrome.storage.local。
+  ...MIXED_MAILBOX_STATE_DEFAULTS.runtime,
   manualAliasUsage: {},
   preservedAliases: {},
   icloudAliasCache: [],
@@ -4824,7 +4829,8 @@ async function initializeSessionStorageAccess() {
 }
 
 async function setState(updates) {
-  console.log(LOG_PREFIX, 'storage.set:', JSON.stringify(updates).slice(0, 200));
+  const safeLogUpdates = self.MixedMailboxUtils?.sanitizeMixedMailboxStateForLog?.(updates) || updates;
+  console.log(LOG_PREFIX, 'storage.set:', JSON.stringify(safeLogUpdates).slice(0, 200));
   if (Object.keys(updates || {}).length > 0) {
     const currentSessionState = await chrome.storage.session.get(null);
     const sessionUpdates = buildStatePatchWithRuntimeState({
@@ -4955,9 +4961,13 @@ async function importSettingsBundle(configBundle) {
 
   await setPersistentSettings(importedSettings);
 
+  const mixedMailboxRuntimeReset = self.MixedMailboxRuntime?.buildMixedMailboxImportRuntimeResetPatch?.() || {
+    activeMixedMailboxEntryId: null,
+    currentHotmailAccountId: null,
+  };
   const sessionUpdates = {
     ...importedSettings,
-    currentHotmailAccountId: null,
+    ...mixedMailboxRuntimeReset,
     email: null,
     registrationEmailState: { ...DEFAULT_REGISTRATION_EMAIL_STATE },
   };
@@ -4965,7 +4975,7 @@ async function importSettingsBundle(configBundle) {
   await setState(sessionUpdates);
   broadcastDataUpdate({
     ...importedSettings,
-    currentHotmailAccountId: null,
+    ...mixedMailboxRuntimeReset,
     ...(sessionUpdates.email !== undefined ? { email: sessionUpdates.email } : {}),
     registrationEmailState: sessionUpdates.registrationEmailState,
   });
@@ -6269,6 +6279,134 @@ async function importMixedMailboxQueue(rawText = '') {
 
 async function patchMixedMailboxQueue(entries = []) {
   return syncMixedMailboxQueue(entries);
+}
+
+async function setActiveMixedMailboxEntry(entryId = '') {
+  const normalizedId = String(entryId || '').trim();
+  const state = await getState();
+  const entries = normalizeMixedMailboxQueueEntries(state.mixedMailboxQueueEntries);
+  const entry = entries.find((item) => item.id === normalizedId) || null;
+  if (!entry) {
+    throw new Error('统一邮箱队列条目不存在。');
+  }
+
+  const prepared = self.MixedMailboxRuntime?.prepareMixedMailboxRun?.({
+    ...state,
+    emailGenerator: MIXED_EMAIL_POOL_GENERATOR,
+    mixedMailboxQueueEntries: entries,
+    activeMixedMailboxEntryId: normalizedId,
+  });
+  if (!prepared) {
+    throw new Error('统一邮箱队列运行时未加载。');
+  }
+  if (
+    prepared.provider === HOTMAIL_PROVIDER
+    && !normalizeHotmailAccounts(state.hotmailAccounts).some(
+      (account) => account.id === prepared.statePatch.currentHotmailAccountId
+    )
+  ) {
+    throw new Error(`Outlook 队列条目 ${entry.email} 对应的账号已不存在。`);
+  }
+
+  const runtimePatch = {
+    activeMixedMailboxEntryId: prepared.statePatch.activeMixedMailboxEntryId,
+    currentHotmailAccountId: prepared.statePatch.currentHotmailAccountId,
+  };
+  await setState(runtimePatch);
+  broadcastDataUpdate(runtimePatch);
+  await setEmailStateSilently(prepared.entry.email, { source: 'mixed-pool' });
+  return {
+    entry: prepared.entry,
+    provider: prepared.provider,
+    statePatch: prepared.statePatch,
+  };
+}
+
+async function prepareMixedMailboxRunForAutoRound() {
+  const state = await getState();
+  const prepared = self.MixedMailboxRuntime?.prepareMixedMailboxRun?.(state);
+  if (!prepared) {
+    throw new Error('统一邮箱队列运行时未加载。');
+  }
+
+  const runtimePatch = {
+    activeMixedMailboxEntryId: prepared.statePatch.activeMixedMailboxEntryId,
+    currentHotmailAccountId: prepared.statePatch.currentHotmailAccountId,
+  };
+  await setState(runtimePatch);
+  broadcastDataUpdate(runtimePatch);
+  await setEmailStateSilently(prepared.entry.email, { source: 'mixed-pool' });
+
+  if (
+    prepared.provider === HOTMAIL_PROVIDER
+    && !normalizeHotmailAccounts(state.hotmailAccounts).some(
+      (account) => account.id === prepared.statePatch.currentHotmailAccountId
+    )
+  ) {
+    throw new Error(`Outlook 队列条目 ${prepared.entry.email} 对应的账号已不存在。`);
+  }
+
+  await addLog(
+    `统一邮箱队列：已选择 ${prepared.entry.email}（${prepared.provider === HOTMAIL_PROVIDER ? 'Outlook' : 'iCloud URL'}）。`,
+    'info'
+  );
+  return prepared;
+}
+
+async function markActiveMixedMailboxEntryUsed() {
+  const state = await getState();
+  const activeId = String(state.activeMixedMailboxEntryId || '').trim();
+  if (!isMixedMailboxGenerator(state) || !activeId) {
+    return { updated: false };
+  }
+
+  const activeEntry = getActiveMixedMailboxEntry(state);
+  if (activeEntry?.type === 'outlook' && activeEntry.hotmailAccountId) {
+    await patchHotmailAccount(activeEntry.hotmailAccountId, {
+      used: true,
+      lastUsedAt: Date.now(),
+      lastError: '',
+    }, {
+      preserveCurrentSelection: true,
+    });
+  }
+
+  const entries = self.MixedMailboxRuntime?.markMixedMailboxEntryUsed?.(
+    state.mixedMailboxQueueEntries,
+    activeId,
+    Date.now()
+  );
+  if (!entries) {
+    throw new Error('统一邮箱队列成功状态更新器未加载。');
+  }
+  await syncMixedMailboxQueue(entries);
+  const statePatch = {
+    activeMixedMailboxEntryId: null,
+    currentHotmailAccountId: null,
+  };
+  await setState(statePatch);
+  broadcastDataUpdate(statePatch);
+  await addLog(`统一邮箱队列：${activeEntry?.email || '当前条目'} 已标记为已用。`, 'ok');
+  return { updated: true, entries };
+}
+
+async function markActiveMixedMailboxEntryError(error) {
+  const state = await getState();
+  const activeId = String(state.activeMixedMailboxEntryId || '').trim();
+  if (!isMixedMailboxGenerator(state) || !activeId) {
+    return { updated: false };
+  }
+
+  const entries = self.MixedMailboxRuntime?.markMixedMailboxEntryError?.(
+    state.mixedMailboxQueueEntries,
+    activeId,
+    error
+  );
+  if (!entries) {
+    throw new Error('统一邮箱队列失败状态更新器未加载。');
+  }
+  await syncMixedMailboxQueue(entries);
+  return { updated: true, entries };
 }
 
 async function upsertHotmailAccount(input) {
@@ -14651,12 +14789,16 @@ const autoRunController = self.MultiPageBackgroundAutoRunController?.createAutoR
   isGpcTaskEndedFailure,
   isHostedCheckoutGenericErrorFailure,
   isHostedCheckoutVerificationResendLimitFailure,
+  isMixedMailboxGenerator,
   isRestartCurrentAttemptError,
   isStep4Route405RecoveryLimitFailure,
   isSignupUserAlreadyExistsFailure,
   isStopError,
   launchAutoRunTimerPlan,
   normalizeAutoRunFallbackThreadIntervalMinutes,
+  prepareMixedMailboxRunForAutoRound,
+  markActiveMixedMailboxEntryError,
+  markActiveMixedMailboxEntryUsed,
   onAutoRunRoundSuccess: LEGACY_IP_PROXY_FEATURE_ENABLED
     ? ((payload = {}) => maybeSwitchIpProxyAfterAutoRunRoundSuccess(payload))
     : null,
@@ -14744,6 +14886,14 @@ function shouldStopEmailAutoFetchRetries(generator, error) {
 
 async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
   const currentState = await getState();
+  if (isMixedMailboxGenerator(currentState)) {
+    const activeEntry = getActiveMixedMailboxEntry(currentState);
+    if (!activeEntry || !currentState.email) {
+      throw new Error('统一邮箱队列当前条目尚未准备完成。');
+    }
+    await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：统一邮箱队列已就绪：${currentState.email}（第 ${attemptRuns} 次尝试）===`, 'ok');
+    return currentState.email;
+  }
   if (isHotmailProvider(currentState)) {
     const account = await ensureHotmailAccountForFlow({
       allowAllocate: true,
@@ -14875,6 +15025,14 @@ async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
 
 async function ensureAutoEmailReady(targetRun, totalRuns, attemptRuns) {
   const currentState = await getState();
+  if (isMixedMailboxGenerator(currentState)) {
+    const activeEntry = getActiveMixedMailboxEntry(currentState);
+    if (!activeEntry || !currentState.email) {
+      throw new Error('统一邮箱队列当前条目尚未准备完成。');
+    }
+    await addLog(`=== 目标 ${targetRun}/${totalRuns} 轮：统一邮箱队列已就绪：${currentState.email}（第 ${attemptRuns} 次尝试）===`, 'ok');
+    return currentState.email;
+  }
   if (isHotmailProvider(currentState)) {
     const account = await ensureHotmailAccountForFlow({
       allowAllocate: true,
@@ -16532,6 +16690,7 @@ const messageRouter = self.MultiPageBackgroundMessageRouter?.createMessageRouter
   pausePpBoomJob: (...args) => plusCheckoutCreateExecutor.pausePpBoomJob(...args),
   patchHotmailAccount,
   patchMixedMailboxQueue,
+  setActiveMixedMailboxEntry,
   patchMail2925Account,
   registerTab,
   requestStop,
