@@ -167,26 +167,29 @@ macOS 首次运行如提示没有权限，可在终端进入解压目录后执�
 
 ##### Outlook / iCloud URL 统一邮箱队列
 
-当 `邮箱服务` 选择 Hotmail / Outlook 时，`邮箱生成` 可以切换为 `统一邮箱队列`。同一个导入框支持混合粘贴 Outlook 和两种受控 iCloud URL 记录：
+当 `邮箱服务` 选择 Hotmail / Outlook 时，`邮箱生成` 可以切换为 `统一邮箱队列`。同一个导入框支持混合粘贴 Outlook、兼容的 iCloud `show` URL 和通用 `messages` URL 记录：
 
 ```text
 outlook@example.com----邮箱密码----客户端ID----刷新令牌
 alias@icloud.com----https://icloud-api.top/show/取信令牌/alias@icloud.com
+generic@icloud.com----https://mail.example/messages/取信令牌/generic@icloud.com
 second@icloud.com----http://yangyang.website/messages/
 取信令牌/second@icloud.com
 ```
 
 - Outlook 与 iCloud URL 记录可以任意混排，导入后会保留原始顺序。
 - Hotmail / Outlook 设置区原有的“批量导入”输入框也会识别 URL 记录，并自动将整批内容导入统一邮箱队列。
-- `yangyang.website` 既支持上面的两行格式，也支持把完整 URL 放在同一行；两行格式只会读取下一条非空行，续行必须严格为 `取信令牌/邮箱`。
-- URL 仅允许 `https://icloud-api.top/show/...` 和 `http://yangyang.website/messages/...` 两个精确白名单，不接受其他 HTTP 主机或路径。
+- 任意域名均可使用完整单行 `邮箱----http(s)://域名/messages/取信令牌/邮箱` 格式；URL 最后一段邮箱必须与开头邮箱一致。
+- `https://icloud-api.top/show/...` 继续兼容；`yangyang.website` 既支持上面的两行格式，也支持把完整 URL 放在同一行。两行格式只会读取下一条非空行，续行必须严格为 `取信令牌/邮箱`。
+- 通用 `messages` URL 同时接受 HTTP 和 HTTPS，但不接受 `localhost` 或 IP 字面量、账号密码、显式端口、查询参数和片段；路径必须精确为 `/messages/取信令牌/邮箱`。
+- 取信请求若发生跳转，最终地址必须保持相同协议、主机、端口且仍在原始 `/messages/` 或 `/show/` 路径内；跨站或跨路径跳转会被拒绝。
 - 自动运行次数会锁定为当前启用且未使用的队列条目数。
 - 每轮按队列顺序选择一条邮箱，并自动切换 Outlook Graph 或 iCloud URL 收码。
 - 统一队列当前轮为 iCloud URL 时不要求额外配置 Hotmail 刷新令牌；队列切换到 Outlook 条目时，仍会校验对应的 Hotmail 账号引用。
 - 只有完整注册流程成功后，当前条目才会标记为已用。
 - 当前条目失败时会停止整批任务，不会自动跳到下一条；失败条目保持未用，修复后可继续重试。
 - iCloud 取信 URL、Outlook 密码、客户端 ID 和刷新令牌都属于敏感凭据。不要截图、公开分享或粘贴到日志、Issue 和聊天记录中；配置导出文件也应按密码文件保管。
-- `yangyang.website` 使用明文 HTTP，请求路径中的邮箱和取信令牌可能被网络中间节点看到，只应在可信网络环境中使用。程序会校验最终响应仍位于原白名单主机和路径，但这不能替代 HTTPS 的传输加密。
+- 任意 HTTP 取信地址都会以明文传输请求路径中的邮箱和取信令牌，网络中间节点可能看到或篡改这些内容；只应在可信网络环境中使用。程序会校验最终响应仍位于原协议、主机和路径范围内，但这不能替代 HTTPS 的传输加密。
 
 #### PP 爆破模式
 
