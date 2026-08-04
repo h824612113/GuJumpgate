@@ -182,6 +182,7 @@ second@icloud.com----http://yangyang.website/messages/
 - URL 仅允许 `https://icloud-api.top/show/...` 和 `http://yangyang.website/messages/...` 两个精确白名单，不接受其他 HTTP 主机或路径。
 - 自动运行次数会锁定为当前启用且未使用的队列条目数。
 - 每轮按队列顺序选择一条邮箱，并自动切换 Outlook Graph 或 iCloud URL 收码。
+- 统一队列当前轮为 iCloud URL 时不要求额外配置 Hotmail 刷新令牌；队列切换到 Outlook 条目时，仍会校验对应的 Hotmail 账号引用。
 - 只有完整注册流程成功后，当前条目才会标记为已用。
 - 当前条目失败时会停止整批任务，不会自动跳到下一条；失败条目保持未用，修复后可继续重试。
 - iCloud 取信 URL、Outlook 密码、客户端 ID 和刷新令牌都属于敏感凭据。不要截图、公开分享或粘贴到日志、Issue 和聊天记录中；配置导出文件也应按密码文件保管。

@@ -2942,7 +2942,11 @@ function isMixedMailboxGenerator(stateOrValue = {}) {
   const generator = typeof stateOrValue === 'string'
     ? stateOrValue
     : stateOrValue?.emailGenerator;
-  return normalizeEmailGenerator(generator) === MIXED_EMAIL_POOL_GENERATOR;
+  if (normalizeEmailGenerator(generator) === MIXED_EMAIL_POOL_GENERATOR) {
+    return true;
+  }
+  return typeof stateOrValue === 'object'
+    && Boolean(self.MixedMailboxRuntime?.shouldUseMixedMailboxQueue?.(stateOrValue));
 }
 
 function getActiveMixedMailboxEntry(state = {}) {

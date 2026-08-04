@@ -3,16 +3,30 @@ const assert = require('node:assert/strict');
 
 global.self = global;
 require('../background/auto-run-controller');
+const mixedMailboxRuntime = require('../mixed-mailbox-runtime');
 
-function createHarness({ runError = null, totalRuns = 1 } = {}) {
+function createHarness({
+  runError = null,
+  totalRuns = 1,
+  initialState = {},
+  mixedModeResolver = (currentState) => currentState?.emailGenerator === 'mixed-pool',
+} = {}) {
   let state = {
     emailGenerator: 'mixed-pool',
     mixedMailboxQueueEntries: [
-      { id: 'one', type: 'icloud-url', email: 'one@icloud.com', enabled: true, used: false },
+      {
+        id: 'one',
+        type: 'icloud-url',
+        email: 'one@icloud.com',
+        credential: 'one@icloud.com----http://yangyang.website/messages/token/one@icloud.com',
+        enabled: true,
+        used: false,
+      },
       { id: 'two', type: 'outlook', email: 'two@outlook.com', enabled: true, used: false, hotmailAccountId: 'hotmail-two' },
     ],
     autoRunFallbackThreadIntervalMinutes: 0,
     nodeStatuses: {},
+    ...initialState,
   };
   const runtimeState = {
     autoRunActive: false,
@@ -25,6 +39,7 @@ function createHarness({ runError = null, totalRuns = 1 } = {}) {
   const used = [];
   const failed = [];
   let sequenceCalls = 0;
+  let ensureCalls = 0;
 
   const controller = global.MultiPageBackgroundAutoRunController.createAutoRunController({
     addLog: async () => {},
@@ -38,7 +53,10 @@ function createHarness({ runError = null, totalRuns = 1 } = {}) {
     cancelPendingCommands: () => {},
     clearStopRequest: () => {},
     createAutoRunSessionId: () => 1,
-    ensureHotmailMailboxReadyForAutoRunRound: async () => {},
+    ensureHotmailMailboxReadyForAutoRunRound: async () => {
+      ensureCalls += 1;
+      throw new Error('Hotmail prerequisite should be skipped for mixed queue');
+    },
     getAutoRunStatusPayload: (phase, payload) => ({ autoRunPhase: phase, ...payload }),
     getErrorMessage: (error) => String(error?.message || error || ''),
     getFirstUnfinishedNodeId: () => null,
@@ -74,7 +92,7 @@ function createHarness({ runError = null, totalRuns = 1 } = {}) {
     waitForRunningNodesToFinish: async () => state,
     getStopRequested: () => false,
     chrome: { runtime: { sendMessage: async () => {} } },
-    isMixedMailboxGenerator: (currentState) => currentState?.emailGenerator === 'mixed-pool',
+    isMixedMailboxGenerator: mixedModeResolver,
     prepareMixedMailboxRunForAutoRound: async () => {
       const entry = state.mixedMailboxQueueEntries.find((item) => item.enabled && !item.used);
       prepared.push(entry.id);
@@ -88,6 +106,7 @@ function createHarness({ runError = null, totalRuns = 1 } = {}) {
     controller,
     failed,
     getSequenceCalls: () => sequenceCalls,
+    getEnsureCalls: () => ensureCalls,
     prepared,
     used,
   };
@@ -112,4 +131,21 @@ test('mixed mailbox failure stops before the next entry even when skip failures 
   assert.deepEqual(harness.used, []);
   assert.deepEqual(harness.failed, [['one', 'HTTP 403']]);
   assert.equal(harness.getSequenceCalls(), 1);
+});
+
+test('skips the Hotmail prerequisite when iCloud queue fallback is active', async () => {
+  const harness = createHarness({
+    initialState: {
+      mailProvider: 'hotmail-api',
+      emailGenerator: 'provider-default',
+      hotmailAccounts: [],
+    },
+    mixedModeResolver: mixedMailboxRuntime.shouldUseMixedMailboxQueue,
+  });
+
+  await harness.controller.autoRunLoop(1, { autoRunSkipFailures: true });
+
+  assert.deepEqual(harness.prepared, ['one']);
+  assert.equal(harness.getEnsureCalls(), 0);
+  assert.deepEqual(harness.used, ['one']);
 });

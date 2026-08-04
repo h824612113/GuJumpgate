@@ -42,8 +42,28 @@
     return utils?.getNextMixedMailboxQueueEntry?.(entries) || null;
   }
 
+  function shouldUseMixedMailboxQueue(state = {}) {
+    const generator = String(state?.emailGenerator || '').trim().toLowerCase();
+    if (generator === MIXED_POOL_GENERATOR) return true;
+    if (String(state?.mailProvider || '').trim().toLowerCase() !== 'hotmail-api') {
+      return false;
+    }
+    const hasRunnableHotmailAccount = (Array.isArray(state?.hotmailAccounts) ? state.hotmailAccounts : [])
+      .some((account) => {
+        const status = String(account?.status || '').trim().toLowerCase();
+        return !account?.used
+          && Boolean(String(account?.refreshToken || '').trim())
+          && (!status || status === 'authorized' || status === 'pending');
+      });
+    if (hasRunnableHotmailAccount) {
+      return false;
+    }
+    return normalizeEntries(state?.mixedMailboxQueueEntries)
+      .some((entry) => entry.type === 'icloud-url' && entry.enabled && !entry.used);
+  }
+
   function prepareMixedMailboxRun(state = {}) {
-    if (String(state?.emailGenerator || '').trim().toLowerCase() !== MIXED_POOL_GENERATOR) {
+    if (!shouldUseMixedMailboxQueue(state)) {
       return null;
     }
     const entry = getActiveMixedMailboxEntry(state);
@@ -107,6 +127,7 @@
     markMixedMailboxEntryError,
     markMixedMailboxEntryUsed,
     prepareMixedMailboxRun,
+    shouldUseMixedMailboxQueue,
     sanitizeMixedMailboxError,
   };
 });

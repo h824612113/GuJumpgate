@@ -65,3 +65,57 @@ test('separates the persisted queue from active runtime selection state', () => 
   });
   assert.equal(Object.hasOwn(importReset, 'mixedMailboxQueueEntries'), false);
 });
+
+test('uses an iCloud queue as a controlled fallback when no Hotmail account exists', () => {
+  const state = {
+    mailProvider: 'hotmail-api',
+    emailGenerator: 'provider-default',
+    hotmailAccounts: [],
+    mixedMailboxQueueEntries: [{
+      id: 'icloud-fallback',
+      type: 'icloud-url',
+      email: 'fallback@icloud.com',
+      credential: 'fallback@icloud.com----http://yangyang.website/messages/token/fallback@icloud.com',
+      enabled: true,
+      used: false,
+    }],
+  };
+
+  assert.equal(runtime.shouldUseMixedMailboxQueue(state), true);
+  const prepared = runtime.prepareMixedMailboxRun(state);
+  assert.equal(prepared.provider, 'icloud-url');
+  assert.equal(prepared.entry.id, 'icloud-fallback');
+  assert.equal(prepared.statePatch.currentHotmailAccountId, null);
+});
+
+test('does not infer mixed mode for an unrelated provider-default state', () => {
+  assert.equal(runtime.shouldUseMixedMailboxQueue({
+    mailProvider: 'hotmail-api',
+    emailGenerator: 'provider-default',
+    hotmailAccounts: [{ id: 'hotmail-one', status: 'authorized', used: false, refreshToken: 'token' }],
+    mixedMailboxQueueEntries: [{
+      id: 'icloud-one',
+      type: 'icloud-url',
+      email: 'one@icloud.com',
+      credential: 'one@icloud.com----http://yangyang.website/messages/token/one@icloud.com',
+      enabled: true,
+      used: false,
+    }],
+  }), false);
+});
+
+test('infers mixed mode when stored Hotmail accounts are exhausted or invalid', () => {
+  assert.equal(runtime.shouldUseMixedMailboxQueue({
+    mailProvider: 'hotmail-api',
+    emailGenerator: 'provider-default',
+    hotmailAccounts: [{ id: 'hotmail-used', status: 'authorized', used: true, refreshToken: 'token' }],
+    mixedMailboxQueueEntries: [{
+      id: 'icloud-one',
+      type: 'icloud-url',
+      email: 'one@icloud.com',
+      credential: 'one@icloud.com----http://yangyang.website/messages/token/one@icloud.com',
+      enabled: true,
+      used: false,
+    }],
+  }), true);
+});
