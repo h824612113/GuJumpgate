@@ -14,6 +14,9 @@
       isGeneratedAliasProvider,
       isReusableGeneratedAliasEmail,
       isHotmailProvider,
+      isMixedMailboxGenerator = () => false,
+      getActiveMixedMailboxEntry = null,
+      resolveMixedMailboxProvider = null,
       isRetryableContentScriptTransportError = () => false,
       isLuckmailProvider,
       isSignupEmailVerificationPageUrl,
@@ -340,11 +343,26 @@
       }
     }
 
+    function resolveEffectiveMailProvider(state = {}) {
+      if (typeof isMixedMailboxGenerator === 'function' && isMixedMailboxGenerator(state)) {
+        const activeEntry = typeof getActiveMixedMailboxEntry === 'function'
+          ? getActiveMixedMailboxEntry(state)
+          : null;
+        const mixedProvider = typeof resolveMixedMailboxProvider === 'function'
+          ? String(resolveMixedMailboxProvider(activeEntry) || '').trim().toLowerCase()
+          : '';
+        if (mixedProvider) {
+          return mixedProvider;
+        }
+      }
+      return String(state?.mailProvider || '').trim().toLowerCase();
+    }
+
     async function resolveSignupEmailForFlow(state, options = {}) {
       const ignoreCurrentEmail = Boolean(options?.ignoreCurrentEmail);
       let resolvedEmail = ignoreCurrentEmail ? '' : state.email;
       let generatedEmailAlreadyPersisted = false;
-      if (isHotmailProvider(state)) {
+      if (resolveEffectiveMailProvider(state) === 'hotmail-api') {
         const preserveAccountIdentity = Boolean(options?.preserveAccountIdentity);
         const account = await ensureHotmailAccountForFlow({
           allowAllocate: true,
