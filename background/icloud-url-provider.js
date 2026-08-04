@@ -12,10 +12,7 @@
   const DEFAULT_MAX_ATTEMPTS = 5;
   const DEFAULT_INTERVAL_MS = 3000;
   const DEFAULT_TIMEOUT_MS = 15000;
-  const MAILBOX_URL_RULES = [
-    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: '/show/' },
-    { protocol: 'http:', hostname: 'yangyang.website', pathPrefix: '/messages/' },
-  ];
+  const ICLOUD_SHOW_URL_RULE = { pathPrefix: '/show/' };
 
   function normalizeCode(value = '') {
     const code = String(value || '').trim();
@@ -139,6 +136,31 @@
     return separatorIndex >= 0 ? credential.slice(separatorIndex + 4).trim() : '';
   }
 
+  function isRejectedMailboxHostname(hostname = '') {
+    const normalized = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (!normalized || normalized === 'localhost' || normalized.endsWith('.localhost')) {
+      return true;
+    }
+
+    return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(normalized) || normalized.includes(':');
+  }
+
+  function getMailboxUrlRule(parsed) {
+    const hostname = String(parsed?.hostname || '').toLowerCase();
+    if (parsed?.protocol === 'https:' && hostname === 'icloud-api.top') {
+      return ICLOUD_SHOW_URL_RULE;
+    }
+
+    if (
+      (parsed?.protocol === 'http:' || parsed?.protocol === 'https:')
+      && !isRejectedMailboxHostname(hostname)
+    ) {
+      return { pathPrefix: '/messages/' };
+    }
+
+    return null;
+  }
+
   async function parseResponsePayload(response) {
     const text = await response.text();
     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
@@ -161,12 +183,8 @@
     }
     if (parsed.username || parsed.password || parsed.port) return null;
 
-    const rule = MAILBOX_URL_RULES.find((candidate) => (
-      parsed.protocol === candidate.protocol
-      && parsed.hostname.toLowerCase() === candidate.hostname
-      && parsed.pathname.startsWith(candidate.pathPrefix)
-    ));
-    if (!rule) return null;
+    const rule = getMailboxUrlRule(parsed);
+    if (!rule || !parsed.pathname.startsWith(rule.pathPrefix)) return null;
 
     if (requireCredentialShape) {
       if (parsed.search || parsed.hash) return null;
@@ -192,7 +210,13 @@
     }
 
     const finalResponse = parseTrustedMailboxUrl(responseUrl || requestUrl, false);
-    if (!finalResponse || finalResponse.rule !== request.rule) {
+    if (
+      !finalResponse
+      || finalResponse.parsed.protocol !== request.parsed.protocol
+      || finalResponse.parsed.hostname !== request.parsed.hostname
+      || finalResponse.parsed.port !== request.parsed.port
+      || finalResponse.rule.pathPrefix !== request.rule.pathPrefix
+    ) {
       throw new Error('iCloud URL 响应地址不受信任。');
     }
   }

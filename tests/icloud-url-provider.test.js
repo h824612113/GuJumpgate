@@ -87,6 +87,45 @@ test('accepts a yangyang response that remains under the messages path', async (
   assert.equal(result.code, '456789');
 });
 
+test('polls arbitrary HTTPS and HTTP messages URLs with same-origin inbox responses', async () => {
+  const cases = [
+    {
+      requestUrl: 'https://mailbox.example/messages/token-https/alias@icloud.com',
+      responseUrl: 'https://mailbox.example/messages/inbox',
+      responseText: '验证码：456789',
+    },
+    {
+      requestUrl: 'http://mailbox.example/messages/token-http/alias@icloud.com',
+      responseUrl: 'http://mailbox.example/messages/inbox',
+      responseText: 'code: 567890',
+    },
+  ];
+
+  for (const scenario of cases) {
+    const api = provider.createIcloudUrlProvider({
+      fetchImpl: async () => ({
+        ok: true,
+        status: 200,
+        url: scenario.responseUrl,
+        headers: { get: () => 'text/plain' },
+        text: async () => scenario.responseText,
+      }),
+      sleep: async () => {},
+      throwIfStopped() {},
+    });
+
+    const result = await api.pollVerificationCode(4, {
+      activeMixedMailboxEntry: {
+        type: 'icloud-url',
+        email: 'alias@icloud.com',
+        url: scenario.requestUrl,
+      },
+    }, { maxAttempts: 1 });
+
+    assert.match(result.code, /^\d{6}$/);
+  }
+});
+
 test('rejects redirected responses outside the original mailbox boundary before reading content', async () => {
   const scenarios = [
     {
@@ -152,7 +191,7 @@ test('rejects redirected responses outside the original mailbox boundary before 
   }
 });
 
-test('rejects an untrusted request URL before fetch without exposing its token', async () => {
+test('rejects local request URLs before fetch without exposing tokens', async () => {
   let fetchCalled = false;
   const logs = [];
   const api = provider.createIcloudUrlProvider({
@@ -167,11 +206,11 @@ test('rejects an untrusted request URL before fetch without exposing its token',
 
   await assert.rejects(
     api.pollVerificationCode(4, {
-      activeMixedMailboxEntry: {
-        type: 'icloud-url',
-        email: 'alias@icloud.com',
-        url: 'http://example.com/messages/private-token/alias@icloud.com',
-      },
+        activeMixedMailboxEntry: {
+          type: 'icloud-url',
+          email: 'alias@icloud.com',
+          url: 'http://127.0.0.1/messages/private-token/alias@icloud.com',
+        },
     }, {
       maxAttempts: 1,
     }),
