@@ -14,7 +14,7 @@ test('parses mixed Outlook and iCloud URL lines in original order', () => {
   assert.equal(result.errors.length, 0);
 });
 
-test('rejects non-HTTPS and mismatched iCloud URL email', () => {
+test('rejects unsupported show URL variants and mismatched iCloud URL email', () => {
   const result = utils.parseMixedMailboxImport([
     'alias@icloud.com----http://icloud-api.top/show/token/alias@icloud.com',
     'alias@icloud.com----https://icloud-api.top/show/token/other@icloud.com',
@@ -22,6 +22,19 @@ test('rejects non-HTTPS and mismatched iCloud URL email', () => {
 
   assert.equal(result.records.length, 0);
   assert.deepEqual(result.errors.map((item) => item.lineNumber), [1, 2]);
+});
+
+test('parses arbitrary HTTPS and HTTP messages mailbox URLs', () => {
+  const result = utils.parseMixedMailboxImport([
+    'one@icloud.com----https://mailbox.example/messages/token-one/one@icloud.com',
+    'two@icloud.com----http://mailbox.example/messages/token-two/two@icloud.com',
+  ].join('\n'));
+
+  assert.equal(result.errors.length, 0);
+  assert.deepEqual(result.records.map((item) => item.url), [
+    'https://mailbox.example/messages/token-one/one@icloud.com',
+    'http://mailbox.example/messages/token-two/two@icloud.com',
+  ]);
 });
 
 test('rejects iCloud URLs without a mailbox token segment', () => {
@@ -53,13 +66,29 @@ test('parses yangyang single-line and continuation records in original order', (
   assert.equal(result.records[2].url, 'http://yangyang.website/messages/token-b/third@icloud.com');
 });
 
-test('rejects mailbox URLs outside the exact protocol host and path allowlist', () => {
+test('rejects unsupported mailbox URL path shapes', () => {
   const cases = [
     'a@icloud.com----http://icloud-api.top/show/token/a@icloud.com',
-    'a@icloud.com----https://yangyang.website/messages/token/a@icloud.com',
-    'a@icloud.com----http://example.com/messages/token/a@icloud.com',
-    'a@icloud.com----http://yangyang.website/show/token/a@icloud.com',
-    'a@icloud.com----http://yangyang.website/messages-extra/token/a@icloud.com',
+    'a@icloud.com----https://mailbox.example/show/token/a@icloud.com',
+    'a@icloud.com----http://mailbox.example/messages-extra/token/a@icloud.com',
+    'a@icloud.com----ftp://mailbox.example/messages/token/a@icloud.com',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
+test('rejects local mailbox URL hosts before importing credentials', () => {
+  const cases = [
+    'a@icloud.com----http://localhost/messages/token/a@icloud.com',
+    'a@icloud.com----https://mailbox.localhost/messages/token/a@icloud.com',
+    'a@icloud.com----http://127.0.0.1/messages/token/a@icloud.com',
+    'a@icloud.com----http://10.0.0.1/messages/token/a@icloud.com',
+    'a@icloud.com----http://192.168.1.1/messages/token/a@icloud.com',
+    'a@icloud.com----http://[::1]/messages/token/a@icloud.com',
   ];
 
   for (const value of cases) {

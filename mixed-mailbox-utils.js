@@ -12,13 +12,39 @@
   const OUTLOOK_TYPE = 'outlook';
   const ICLOUD_URL_TYPE = 'icloud-url';
   const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  const ICLOUD_URL_RULES = [
-    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 'show' },
-    { protocol: 'http:', hostname: 'yangyang.website', pathPrefix: 'messages' },
-  ];
+  const ICLOUD_SHOW_URL_RULE = { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 'show' };
 
   function normalizeEmail(value = '') {
     return String(value || '').trim().toLowerCase();
+  }
+
+  function isRejectedMailboxHostname(hostname = '') {
+    const normalized = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    if (!normalized || normalized === 'localhost' || normalized.endsWith('.localhost')) {
+      return true;
+    }
+
+    // URL already normalizes IPv4 literals. IPv6 literals are bracketed by URL.hostname.
+    return /^(?:\d{1,3}\.){3}\d{1,3}$/.test(normalized) || normalized.includes(':');
+  }
+
+  function getMailboxUrlRule(parsed) {
+    const hostname = String(parsed?.hostname || '').toLowerCase();
+    if (
+      parsed?.protocol === ICLOUD_SHOW_URL_RULE.protocol
+      && hostname === ICLOUD_SHOW_URL_RULE.hostname
+    ) {
+      return ICLOUD_SHOW_URL_RULE;
+    }
+
+    if (
+      (parsed?.protocol === 'http:' || parsed?.protocol === 'https:')
+      && !isRejectedMailboxHostname(hostname)
+    ) {
+      return { pathPrefix: 'messages' };
+    }
+
+    return null;
   }
 
   function validateIcloudUrl(rawUrl, email) {
@@ -33,12 +59,9 @@
       return { ok: false, error: 'iCloud URL 不能包含登录信息、端口、查询参数或片段。' };
     }
 
-    const rule = ICLOUD_URL_RULES.find((candidate) => (
-      parsed.protocol === candidate.protocol
-      && parsed.hostname.toLowerCase() === candidate.hostname
-    ));
+    const rule = getMailboxUrlRule(parsed);
     if (!rule) {
-      return { ok: false, error: 'iCloud URL 不在允许的协议和主机白名单中。' };
+      return { ok: false, error: 'iCloud URL 主机或协议不受支持。' };
     }
     const pathSegments = parsed.pathname.split('/').slice(1);
     if (
