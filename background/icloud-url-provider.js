@@ -12,7 +12,10 @@
   const DEFAULT_MAX_ATTEMPTS = 5;
   const DEFAULT_INTERVAL_MS = 3000;
   const DEFAULT_TIMEOUT_MS = 15000;
-  const ICLOUD_SHOW_URL_RULE = { pathPrefix: '/show/' };
+  const ICLOUD_URL_RULES = [
+    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: '/show/' },
+    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: '/s/' },
+  ];
 
   function normalizeCode(value = '') {
     const code = String(value || '').trim();
@@ -234,9 +237,13 @@
 
   function getMailboxUrlRule(parsed) {
     const hostname = String(parsed?.hostname || '').toLowerCase();
-    if (parsed?.protocol === 'https:' && hostname === 'icloud-api.top') {
-      return ICLOUD_SHOW_URL_RULE;
-    }
+    const pathname = String(parsed?.pathname || '');
+    const icloudRule = ICLOUD_URL_RULES.find((rule) => (
+      parsed?.protocol === rule.protocol
+      && hostname === rule.hostname
+      && pathname.startsWith(rule.pathPrefix)
+    ));
+    if (icloudRule) return icloudRule;
 
     if (
       (parsed?.protocol === 'http:' || parsed?.protocol === 'https:')

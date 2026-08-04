@@ -12,7 +12,10 @@
   const OUTLOOK_TYPE = 'outlook';
   const ICLOUD_URL_TYPE = 'icloud-url';
   const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  const ICLOUD_SHOW_URL_RULE = { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 'show' };
+  const ICLOUD_URL_RULES = [
+    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 'show' },
+    { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 's' },
+  ];
 
   function normalizeEmail(value = '') {
     return String(value || '').trim().toLowerCase();
@@ -41,12 +44,13 @@
 
   function getMailboxUrlRule(parsed) {
     const hostname = String(parsed?.hostname || '').toLowerCase();
-    if (
-      parsed?.protocol === ICLOUD_SHOW_URL_RULE.protocol
-      && hostname === ICLOUD_SHOW_URL_RULE.hostname
-    ) {
-      return ICLOUD_SHOW_URL_RULE;
-    }
+    const pathPrefix = String(parsed?.pathname || '').split('/')[1] || '';
+    const icloudRule = ICLOUD_URL_RULES.find((rule) => (
+      parsed?.protocol === rule.protocol
+      && hostname === rule.hostname
+      && pathPrefix === rule.pathPrefix
+    ));
+    if (icloudRule) return icloudRule;
 
     if (
       (parsed?.protocol === 'http:' || parsed?.protocol === 'https:')

@@ -37,6 +37,31 @@ test('parses arbitrary HTTPS and HTTP messages mailbox URLs', () => {
   ]);
 });
 
+test('parses HTTPS iCloud shared mailbox URLs', () => {
+  const result = utils.parseMixedMailboxImport(
+    'alias@icloud.com----https://icloud-api.top/s/shared-token/alias@icloud.com'
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].type, 'icloud-url');
+  assert.equal(result.records[0].url, 'https://icloud-api.top/s/shared-token/alias@icloud.com');
+});
+
+test('rejects insecure or malformed iCloud shared mailbox URLs', () => {
+  const cases = [
+    'alias@icloud.com----http://icloud-api.top/s/shared-token/alias@icloud.com',
+    'alias@icloud.com----https://icloud-api.top/shared/shared-token/alias@icloud.com',
+    'alias@icloud.com----https://icloud-api.top/s/shared-token/other@icloud.com',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
 test('rejects iCloud URLs without a mailbox token segment', () => {
   const result = utils.parseMixedMailboxImport(
     'alias@icloud.com----https://icloud-api.top/show//alias@icloud.com'

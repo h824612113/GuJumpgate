@@ -164,6 +164,30 @@ test('accepts a yangyang response that remains under the messages path', async (
   assert.equal(result.code, '456789');
 });
 
+test('polls an iCloud shared mailbox URL that remains under the shared path', async () => {
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl: async () => ({
+      ok: true,
+      status: 200,
+      url: 'https://icloud-api.top/s/inbox',
+      headers: { get: () => 'text/html' },
+      text: async () => '<p>验证码：654321</p>',
+    }),
+    sleep: async () => {},
+    throwIfStopped() {},
+  });
+
+  const result = await api.pollVerificationCode(4, {
+    activeMixedMailboxEntry: {
+      type: 'icloud-url',
+      email: 'alias@icloud.com',
+      url: 'https://icloud-api.top/s/shared-token/alias@icloud.com',
+    },
+  }, { maxAttempts: 1 });
+
+  assert.equal(result.code, '654321');
+});
+
 test('polls arbitrary HTTPS and HTTP messages URLs with same-origin inbox responses', async () => {
   const cases = [
     {
@@ -224,6 +248,10 @@ test('rejects redirected responses outside the original mailbox boundary before 
     {
       requestUrl: 'https://icloud-api.top/show/private-token/alias@icloud.com',
       responseUrl: 'http://yangyang.website/messages/inbox',
+    },
+    {
+      requestUrl: 'https://icloud-api.top/s/private-token/alias@icloud.com',
+      responseUrl: 'https://icloud-api.top/show/inbox',
     },
   ];
 
