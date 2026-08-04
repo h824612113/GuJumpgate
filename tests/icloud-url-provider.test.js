@@ -31,6 +31,70 @@ test('extracts a Base64 iframe message-body code before numeric mail identifiers
   assert.equal(result.code, '467887');
 });
 
+test('extracts a Base64 message body stored directly in a JSON response', () => {
+  const mailBody = '<p>输入此临时验证码以继续：</p><p>277996</p>';
+  const payload = {
+    html: `data:text/html;charset=utf-8;base64,${Buffer.from(mailBody, 'utf8').toString('base64')}`,
+  };
+
+  const result = provider.extractVerificationCodeFromIcloudUrlPayload(payload);
+
+  assert.equal(result?.code || '', '277996');
+});
+
+test('polls a dynamic messages API and its mail-detail response', async () => {
+  const credentialUrl = 'https://mailbox.example/messages/token-a/alias@icloud.com';
+  const mailBody = '<p>输入此临时验证码以继续：</p><p>277996</p>';
+  const detailPayload = JSON.stringify({
+    html: `data:text/html;charset=utf-8;base64,${Buffer.from(mailBody, 'utf8').toString('base64')}`,
+  });
+  const requests = [];
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      if (url === credentialUrl) {
+        return new Response([
+          '<script>',
+          "var detailBase='/message/';",
+          "var detailSuffix='/token-a/alias@icloud.com';",
+          "var pageBase='/api/messages/token-a/alias@icloud.com';",
+          '</script>',
+        ].join(''), {
+          status: 200,
+          headers: { 'content-type': 'text/html' },
+        });
+      }
+      if (url === 'https://mailbox.example/api/messages/token-a/alias@icloud.com') {
+        return new Response(JSON.stringify({ items: [{ id: 'mail-one' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      if (url === 'https://mailbox.example/message/mail-one/token-a/alias@icloud.com') {
+        return new Response(detailPayload, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      throw new Error(`unexpected request: ${url}`);
+    },
+    sleep: async () => {},
+    throwIfStopped() {},
+  });
+
+  const result = await api.pollVerificationCode(4, {
+    activeMixedMailboxEntry: {
+      type: 'icloud-url',
+      email: 'alias@icloud.com',
+      url: credentialUrl,
+    },
+  }, { maxAttempts: 1 });
+
+  assert.equal(result.code, '277996');
+  assert.equal(requests.length, 3);
+  assert.ok(requests.every(({ options }) => options.credentials === 'omit'));
+});
+
 test('excludes previously used verification codes', () => {
   assert.equal(
     provider.extractVerificationCodeFromIcloudUrlPayload('code: 123456', { excludeCodes: ['123456'] }),

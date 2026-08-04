@@ -116,10 +116,19 @@
 
   function extractEmbeddedHtmlDataUrlBodies(source = '') {
     const bodies = [];
+    const dataUrls = new Set();
     const pattern = /\b(?:src|href)\s*=\s*(["'])(data:text\/html[^"']*)\1/gi;
     let match;
     while ((match = pattern.exec(String(source || '')))) {
-      const dataUrl = decodeHtmlEntities(match[2]);
+      dataUrls.add(decodeHtmlEntities(match[2]));
+    }
+
+    const directDataUrlPattern = /data:text\/html(?:;[^,\s"'<>]*)*,[^\s"'<>]+/gi;
+    while ((match = directDataUrlPattern.exec(String(source || '')))) {
+      dataUrls.add(decodeHtmlEntities(match[0]));
+    }
+
+    for (const dataUrl of dataUrls) {
       const separatorIndex = dataUrl.indexOf(',');
       const header = separatorIndex >= 0 ? dataUrl.slice(0, separatorIndex) : '';
       if (separatorIndex < 0 || !/;base64(?:;|$)/i.test(header)) continue;
@@ -152,11 +161,12 @@
       return '';
     };
 
+    for (const body of extractEmbeddedHtmlDataUrlBodies(source)) {
+      const code = searchText(toVisibleText(body));
+      if (code) return code;
+    }
+
     if (looksLikeHtml(source)) {
-      for (const body of extractEmbeddedHtmlDataUrlBodies(source)) {
-        const code = searchText(toVisibleText(body));
-        if (code) return code;
-      }
       return searchText(toVisibleText(source));
     }
 
@@ -298,16 +308,75 @@
     }
   }
 
+  function parseTrustedSameOriginMailboxResourceUrl(rawUrl, credentialUrl, allowedPathPrefixes = []) {
+    const credential = parseTrustedMailboxUrl(credentialUrl, true);
+    if (!credential) return null;
+
+    let parsed;
+    try {
+      parsed = new URL(String(rawUrl || '').trim(), credential.parsed.origin);
+    } catch {
+      return null;
+    }
+
+    if (
+      parsed.username
+      || parsed.password
+      || parsed.port
+      || hasExplicitMailboxUrlPort(rawUrl)
+      || parsed.search
+      || parsed.hash
+      || parsed.protocol !== credential.parsed.protocol
+      || parsed.hostname !== credential.parsed.hostname
+      || !allowedPathPrefixes.some((prefix) => parsed.pathname.startsWith(prefix))
+    ) {
+      return null;
+    }
+
+    return parsed;
+  }
+
+  function getInlineScriptStringValue(source = '', variableName = '') {
+    const escapedName = String(variableName || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const pattern = new RegExp(`\\bvar\\s+${escapedName}\\s*=\\s*(["'])([^"']+)\\1`, 'i');
+    return String(pattern.exec(String(source || ''))?.[2] || '');
+  }
+
+  function getDynamicMessagesApiConfig(payload, credentialUrl) {
+    if (typeof payload !== 'string') return null;
+
+    const pageBase = getInlineScriptStringValue(payload, 'pageBase');
+    const detailBase = getInlineScriptStringValue(payload, 'detailBase');
+    const detailSuffix = getInlineScriptStringValue(payload, 'detailSuffix');
+    const pageUrl = parseTrustedSameOriginMailboxResourceUrl(pageBase, credentialUrl, ['/api/messages/']);
+    if (!pageUrl || !detailBase || !detailSuffix) return null;
+
+    return { pageUrl: pageUrl.href, detailBase, detailSuffix };
+  }
+
+  function getDynamicMessagesDetailUrls(payload, config, credentialUrl) {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const urls = [];
+    for (const item of items.slice(0, 12)) {
+      const mailId = String(item?.id || '').trim();
+      if (!/^[A-Za-z0-9_-]{1,160}$/.test(mailId)) continue;
+      const detailUrl = parseTrustedSameOriginMailboxResourceUrl(
+        `${config.detailBase}${mailId}${config.detailSuffix}`,
+        credentialUrl,
+        ['/message/']
+      );
+      if (detailUrl) urls.push(detailUrl.href);
+    }
+    return urls;
+  }
+
   function createIcloudUrlProvider(deps = {}) {
     const fetchImpl = deps.fetchImpl || globalThis.fetch;
     const sleep = deps.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     const throwIfStopped = deps.throwIfStopped || (() => {});
     const addLog = deps.addLog || (async () => {});
 
-    async function requestMailbox(url, timeoutMs) {
-      if (!parseTrustedMailboxUrl(url, true)) {
-        throw new Error('iCloud URL 取信地址不受信任。');
-      }
+    async function requestMailboxPayload(url, timeoutMs, validateRequestUrl) {
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const timer = controller
         ? setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS))
@@ -319,7 +388,7 @@
           cache: 'no-store',
           signal: controller?.signal,
         });
-        validateMailboxResponseUrl(url, response.url);
+        validateRequestUrl(response.url || url);
         if (!response.ok) {
           throw new Error(`HTTP ${response.status}`);
         }
@@ -332,6 +401,24 @@
       } finally {
         if (timer) clearTimeout(timer);
       }
+    }
+
+    async function requestMailbox(url, timeoutMs) {
+      if (!parseTrustedMailboxUrl(url, true)) {
+        throw new Error('iCloud URL 取信地址不受信任。');
+      }
+      return requestMailboxPayload(url, timeoutMs, (responseUrl) => validateMailboxResponseUrl(url, responseUrl));
+    }
+
+    async function requestSameOriginMailboxResource(url, credentialUrl, allowedPathPrefixes, timeoutMs) {
+      if (!parseTrustedSameOriginMailboxResourceUrl(url, credentialUrl, allowedPathPrefixes)) {
+        throw new Error('iCloud URL 邮件资源地址不受信任。');
+      }
+      return requestMailboxPayload(url, timeoutMs, (responseUrl) => {
+        if (!parseTrustedSameOriginMailboxResourceUrl(responseUrl, credentialUrl, allowedPathPrefixes)) {
+          throw new Error('iCloud URL 邮件资源响应地址不受信任。');
+        }
+      });
     }
 
     async function pollVerificationCode(step, state, pollPayload = {}) {
@@ -364,6 +451,39 @@
               emailTimestamp: Date.now(),
               mailId: match.mailId || '',
             };
+          }
+
+          const dynamicConfig = getDynamicMessagesApiConfig(payload, url);
+          if (dynamicConfig) {
+            const messageList = await requestSameOriginMailboxResource(
+              dynamicConfig.pageUrl,
+              url,
+              ['/api/messages/'],
+              timeoutMs
+            );
+            for (const detailUrl of getDynamicMessagesDetailUrls(messageList, dynamicConfig, url)) {
+              throwIfStopped();
+              const detailPayload = await requestSameOriginMailboxResource(
+                detailUrl,
+                url,
+                ['/message/'],
+                timeoutMs
+              );
+              const detailMatch = extractVerificationCodeFromIcloudUrlPayload(detailPayload, {
+                codePatterns: pollPayload.codePatterns || [],
+                excludeCodes: pollPayload.excludeCodes || [],
+                targetEmail: pollPayload.targetEmail || entry.email,
+              });
+              if (detailMatch?.code) {
+                await addLog(`步骤 ${step}：已通过 iCloud URL 找到验证码。`, 'ok');
+                return {
+                  ok: true,
+                  code: detailMatch.code,
+                  emailTimestamp: Date.now(),
+                  mailId: detailMatch.mailId || '',
+                };
+              }
+            }
           }
           lastError = new Error(`步骤 ${step}：iCloud URL 暂未返回验证码（${attempt}/${maxAttempts}）。`);
         } catch (error) {
