@@ -3356,6 +3356,7 @@ const phoneAuthHelpers = self.MultiPagePhoneAuth?.createPhoneAuthHelpers?.({
   isAddPhonePageReady,
   isConsentReady: isStep8Ready,
   isPhoneVerificationPageReady,
+  isSignupProfilePageReady: () => isStep5Ready() || isSignupProfilePageUrl(),
   isVisibleElement,
   simulateClick,
   sleep,

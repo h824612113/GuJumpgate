@@ -12,6 +12,7 @@
       isAddPhonePageReady,
       isConsentReady,
       isPhoneVerificationPageReady,
+      isSignupProfilePageReady = () => false,
       isVisibleElement,
       performOperationWithDelay: injectedPerformOperationWithDelay,
       simulateClick,
@@ -1309,6 +1310,14 @@
           return {
             success: true,
             consentReady: true,
+            url: location.href,
+          };
+        }
+
+        if (isSignupProfilePageReady()) {
+          return {
+            success: true,
+            profilePage: true,
             url: location.href,
           };
         }
