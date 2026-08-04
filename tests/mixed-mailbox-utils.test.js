@@ -84,6 +84,7 @@ test('rejects unsupported mailbox URL path shapes', () => {
 test('rejects local mailbox URL hosts before importing credentials', () => {
   const cases = [
     'a@icloud.com----http://localhost/messages/token/a@icloud.com',
+    'a@icloud.com----http://localhost./messages/token/a@icloud.com',
     'a@icloud.com----https://mailbox.localhost/messages/token/a@icloud.com',
     'a@icloud.com----http://127.0.0.1/messages/token/a@icloud.com',
     'a@icloud.com----http://10.0.0.1/messages/token/a@icloud.com',
@@ -102,6 +103,8 @@ test('rejects mailbox URLs with credentials ports queries or fragments', () => {
   const cases = [
     'a@icloud.com----https://user:pass@icloud-api.top/show/token/a@icloud.com',
     'a@icloud.com----https://icloud-api.top:444/show/token/a@icloud.com',
+    'a@icloud.com----https://mailbox.example:443/messages/token/a@icloud.com',
+    'a@icloud.com----http://mailbox.example:80/messages/token/a@icloud.com',
     'a@icloud.com----https://icloud-api.top/show/token/a@icloud.com?view=1',
     'a@icloud.com----https://icloud-api.top/show/token/a@icloud.com#latest',
   ];

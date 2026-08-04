@@ -191,36 +191,44 @@ test('rejects redirected responses outside the original mailbox boundary before 
   }
 });
 
-test('rejects local request URLs before fetch without exposing tokens', async () => {
-  let fetchCalled = false;
-  const logs = [];
-  const api = provider.createIcloudUrlProvider({
-    fetchImpl: async () => {
-      fetchCalled = true;
-      throw new Error('fetch should not run');
-    },
-    sleep: async () => {},
-    throwIfStopped() {},
-    addLog: async (message) => logs.push(message),
-  });
+test('rejects local and explicit-port request URLs before fetch without exposing tokens', async () => {
+  const urls = [
+    'http://127.0.0.1/messages/private-token/alias@icloud.com',
+    'http://localhost./messages/private-token/alias@icloud.com',
+    'https://mailbox.example:443/messages/private-token/alias@icloud.com',
+  ];
 
-  await assert.rejects(
-    api.pollVerificationCode(4, {
+  for (const url of urls) {
+    let fetchCalled = false;
+    const logs = [];
+    const api = provider.createIcloudUrlProvider({
+      fetchImpl: async () => {
+        fetchCalled = true;
+        throw new Error('fetch should not run');
+      },
+      sleep: async () => {},
+      throwIfStopped() {},
+      addLog: async (message) => logs.push(message),
+    });
+
+    await assert.rejects(
+      api.pollVerificationCode(4, {
         activeMixedMailboxEntry: {
           type: 'icloud-url',
           email: 'alias@icloud.com',
-          url: 'http://127.0.0.1/messages/private-token/alias@icloud.com',
+          url,
         },
-    }, {
-      maxAttempts: 1,
-    }),
-    (error) => {
-      assert.match(error.message, /取信地址不受信任/);
-      assert.equal(error.message.includes('private-token'), false);
-      return true;
-    }
-  );
+      }, {
+        maxAttempts: 1,
+      }),
+      (error) => {
+        assert.match(error.message, /取信地址不受信任/);
+        assert.equal(error.message.includes('private-token'), false);
+        return true;
+      }
+    );
 
-  assert.equal(fetchCalled, false);
-  assert.equal(logs.join('\n').includes('private-token'), false);
+    assert.equal(fetchCalled, false);
+    assert.equal(logs.join('\n').includes('private-token'), false);
+  }
 });

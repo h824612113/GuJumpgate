@@ -136,8 +136,19 @@
     return separatorIndex >= 0 ? credential.slice(separatorIndex + 4).trim() : '';
   }
 
+  function hasExplicitMailboxUrlPort(rawUrl = '') {
+    const authority = String(rawUrl || '').trim().match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i)?.[1] || '';
+    const hostnamePort = authority.slice(authority.lastIndexOf('@') + 1);
+    if (hostnamePort.startsWith('[')) {
+      return /^\[[^\]]+\]:\d*$/.test(hostnamePort);
+    }
+    return /:\d*$/.test(hostnamePort);
+  }
+
   function isRejectedMailboxHostname(hostname = '') {
-    const normalized = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    const normalized = String(hostname || '').trim().toLowerCase()
+      .replace(/^\[|\]$/g, '')
+      .replace(/\.$/, '');
     if (!normalized || normalized === 'localhost' || normalized.endsWith('.localhost')) {
       return true;
     }
@@ -181,7 +192,7 @@
     } catch {
       return null;
     }
-    if (parsed.username || parsed.password || parsed.port) return null;
+    if (parsed.username || parsed.password || parsed.port || hasExplicitMailboxUrlPort(rawUrl)) return null;
 
     const rule = getMailboxUrlRule(parsed);
     if (!rule || !parsed.pathname.startsWith(rule.pathPrefix)) return null;

@@ -18,8 +18,19 @@
     return String(value || '').trim().toLowerCase();
   }
 
+  function hasExplicitMailboxUrlPort(rawUrl = '') {
+    const authority = String(rawUrl || '').trim().match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i)?.[1] || '';
+    const hostnamePort = authority.slice(authority.lastIndexOf('@') + 1);
+    if (hostnamePort.startsWith('[')) {
+      return /^\[[^\]]+\]:\d*$/.test(hostnamePort);
+    }
+    return /:\d*$/.test(hostnamePort);
+  }
+
   function isRejectedMailboxHostname(hostname = '') {
-    const normalized = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    const normalized = String(hostname || '').trim().toLowerCase()
+      .replace(/^\[|\]$/g, '')
+      .replace(/\.$/, '');
     if (!normalized || normalized === 'localhost' || normalized.endsWith('.localhost')) {
       return true;
     }
@@ -55,7 +66,7 @@
       return { ok: false, error: 'iCloud URL 格式无效。' };
     }
 
-    if (parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash) {
+    if (parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || hasExplicitMailboxUrlPort(rawUrl)) {
       return { ok: false, error: 'iCloud URL 不能包含登录信息、端口、查询参数或片段。' };
     }
 
