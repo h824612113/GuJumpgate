@@ -1128,7 +1128,11 @@ async function waitForSignupEntryState(options = {}) {
       log(`步骤 ${step}：注册入口状态切换为 ${snapshot.state}，状态快照：${JSON.stringify(getSignupEntryStateSummary(snapshot))}`);
     }
 
-    if (snapshot.state === 'password_page' || snapshot.state === 'email_entry') {
+    if (
+      snapshot.state === 'password_page'
+      || snapshot.state === 'email_entry'
+      || snapshot.state === 'verification_page'
+    ) {
       return snapshot;
     }
 
@@ -1324,6 +1328,15 @@ async function fillSignupEmailAndContinue(email, step) {
     log(`步骤 ${step}：当前已在密码页，无需重复提交邮箱。`);
     return {
       alreadyOnPasswordPage: true,
+      url: snapshot.url || location.href,
+    };
+  }
+
+  if (snapshot.state === 'verification_page') {
+    log(`步骤 ${step}：当前已在邮箱验证码页，无需重复提交邮箱。`);
+    return {
+      alreadyOnVerificationPage: true,
+      email,
       url: snapshot.url || location.href,
     };
   }
