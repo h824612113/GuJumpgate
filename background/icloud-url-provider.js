@@ -79,22 +79,88 @@
     return '';
   }
 
+  function decodeHtmlEntities(value = '') {
+    return String(value || '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/&amp;/gi, '&')
+      .replace(/&lt;/gi, '<')
+      .replace(/&gt;/gi, '>')
+      .replace(/&quot;/gi, '"')
+      .replace(/&#39;|&apos;/gi, "'")
+      .replace(/&#x([0-9a-f]+);/gi, (_, code) => String.fromCodePoint(parseInt(code, 16)))
+      .replace(/&#(\d+);/g, (_, code) => String.fromCodePoint(parseInt(code, 10)));
+  }
+
+  function toVisibleText(html = '') {
+    return decodeHtmlEntities(String(html || '')
+      .replace(/<!--[\s\S]*?-->/g, ' ')
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script\s*>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style\s*>/gi, ' ')
+      .replace(/<[^>]+>/g, ' '))
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
+  function decodeBase64Utf8(value = '') {
+    try {
+      const binary = typeof atob === 'function'
+        ? atob(value)
+        : (typeof Buffer !== 'undefined' ? Buffer.from(value, 'base64').toString('binary') : '');
+      if (!binary) return '';
+      const bytes = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch {
+      return '';
+    }
+  }
+
+  function extractEmbeddedHtmlDataUrlBodies(source = '') {
+    const bodies = [];
+    const pattern = /\b(?:src|href)\s*=\s*(["'])(data:text\/html[^"']*)\1/gi;
+    let match;
+    while ((match = pattern.exec(String(source || '')))) {
+      const dataUrl = decodeHtmlEntities(match[2]);
+      const separatorIndex = dataUrl.indexOf(',');
+      const header = separatorIndex >= 0 ? dataUrl.slice(0, separatorIndex) : '';
+      if (separatorIndex < 0 || !/;base64(?:;|$)/i.test(header)) continue;
+      const body = decodeBase64Utf8(dataUrl.slice(separatorIndex + 1));
+      if (body) bodies.push(body);
+    }
+    return bodies;
+  }
+
+  function looksLikeHtml(source = '') {
+    return /<\/?[a-z][^>]*>/i.test(String(source || ''));
+  }
+
   function extractCodeFromText(text, codePatterns = []) {
     const source = String(text || '');
-    const matchedByRule = extractCodeByRulePatterns(source, codePatterns);
-    if (matchedByRule) return matchedByRule;
-
     const patterns = [
       /(?:代码为|验证码[^0-9]*?)[\s：:]*(\d{6})/i,
       /(?:log-?in\s+code|enter\s+this\s+code)[^0-9]{0,24}(\d{6})/i,
       /code(?:\s+is)?[\s：:]+(\d{6})/i,
       /\b(\d{6})\b/,
     ];
-    for (const pattern of patterns) {
-      const match = source.match(pattern);
-      if (match?.[1]) return match[1];
+
+    const searchText = (candidate) => {
+      const matchedByRule = extractCodeByRulePatterns(candidate, codePatterns);
+      if (matchedByRule) return matchedByRule;
+      for (const pattern of patterns) {
+        const match = candidate.match(pattern);
+        if (match?.[1]) return match[1];
+      }
+      return '';
+    };
+
+    if (looksLikeHtml(source)) {
+      for (const body of extractEmbeddedHtmlDataUrlBodies(source)) {
+        const code = searchText(toVisibleText(body));
+        if (code) return code;
+      }
+      return searchText(toVisibleText(source));
     }
-    return '';
+
+    return searchText(source);
   }
 
   function extractVerificationCodeFromIcloudUrlPayload(payload, options = {}) {

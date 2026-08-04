@@ -18,6 +18,19 @@ test('extracts verification codes from JSON, HTML and plain text', () => {
   assert.equal(provider.extractVerificationCodeFromIcloudUrlPayload('验证码：345678').code, '345678');
 });
 
+test('extracts a Base64 iframe message-body code before numeric mail identifiers', () => {
+  const mailBody = '<p>输入此临时验证码以继续：</p><p>467887</p>';
+  const frameUrl = `data:text/html;charset=utf-8;base64,${Buffer.from(mailBody, 'utf8').toString('base64')}`;
+  const payload = [
+    '<a href="#mail-209218" data-id="209218">你的 ChatGPT 临时验证码</a>',
+    `<iframe src="${frameUrl}"></iframe>`,
+  ].join('');
+
+  const result = provider.extractVerificationCodeFromIcloudUrlPayload(payload);
+
+  assert.equal(result.code, '467887');
+});
+
 test('excludes previously used verification codes', () => {
   assert.equal(
     provider.extractVerificationCodeFromIcloudUrlPayload('code: 123456', { excludeCodes: ['123456'] }),
