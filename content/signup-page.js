@@ -1224,7 +1224,7 @@ function isUnifiedAuthLoginEntryPage() {
 }
 
 function normalizeSignupEntryReadyResult(snapshot) {
-  if (snapshot.state === 'entry_home' || snapshot.state === 'email_choice_entry' || snapshot.state === 'phone_entry' || snapshot.state === 'email_entry' || snapshot.state === 'password_page') {
+  if (snapshot.state === 'entry_home' || snapshot.state === 'email_choice_entry' || snapshot.state === 'phone_entry' || snapshot.state === 'email_entry' || snapshot.state === 'password_page' || snapshot.state === 'verification_page') {
     return {
       ready: true,
       state: snapshot.state,

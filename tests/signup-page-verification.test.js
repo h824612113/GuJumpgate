@@ -73,14 +73,17 @@ function createVerificationPageHarness() {
   vm.runInNewContext(source, context, { filename: 'content/signup-page.js' });
 
   return {
-    executeNode(payload) {
+    execute(message) {
       return new Promise((resolve) => {
-        listeners[0]({
-          type: 'EXECUTE_NODE',
-          nodeId: 'submit-signup-email',
-          step: 2,
-          payload,
-        }, {}, resolve);
+        listeners[0](message, {}, resolve);
+      });
+    },
+    executeNode(payload) {
+      return this.execute({
+        type: 'EXECUTE_NODE',
+        nodeId: 'submit-signup-email',
+        step: 2,
+        payload,
       });
     },
   };
@@ -93,5 +96,20 @@ test('treats an existing signup verification page as a valid step 2 result', asy
 
   assert.equal(result.ok, true);
   assert.equal(result.alreadyOnVerificationPage, true);
+  assert.equal(result.url, 'https://auth.openai.com/email-verification');
+});
+
+test('treats a signup verification page as a valid registration state probe', async () => {
+  const harness = createVerificationPageHarness();
+
+  const result = await harness.execute({
+    type: 'ENSURE_SIGNUP_ENTRY_READY',
+    step: 2,
+    payload: {},
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.ready, true);
+  assert.equal(result.state, 'verification_page');
   assert.equal(result.url, 'https://auth.openai.com/email-verification');
 });
