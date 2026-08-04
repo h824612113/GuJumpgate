@@ -4,6 +4,7 @@
   const DEFAULT_REGISTRATION_SUCCESS_WAIT_MS = 4000;
   const LOCAL_CPA_JSON_NO_RT_PANEL_MODE = 'local-cpa-json-no-rt';
   const LOCAL_CPA_JSON_EXPORT_NODE_ID = 'local-cpa-json-export';
+  const CHATGPT_SESSION_APPEND_PATH = '/append-chatgpt-session';
   const CHATGPT_SESSION_EXPORT_URL = 'https://chatgpt.com/';
   const STEP6_COOKIE_CLEAR_DOMAINS = [
     'chatgpt.com',
@@ -281,6 +282,65 @@
       }
     }
 
+    async function appendChatGptSessionJsonLine(state = {}, visibleStep = 6) {
+      const helperBaseUrl = normalizeHotmailLocalBaseUrl(state.hotmailLocalBaseUrl);
+      if (!helperBaseUrl) {
+        throw new Error('尚未配置本地 helper 地址，无法保存 ChatGPT session。');
+      }
+
+      const sessionResult = await readChatGptSessionForExport(state, visibleStep);
+      const session = sessionResult?.session;
+      const accessToken = normalizeString(sessionResult?.accessToken || session?.accessToken);
+      if (!session || typeof session !== 'object' || Array.isArray(session)) {
+        throw new Error(`步骤 ${visibleStep}：ChatGPT session 响应不是有效对象，无法保存。`);
+      }
+      if (!accessToken) {
+        throw new Error(`步骤 ${visibleStep}：ChatGPT session 缺少 accessToken，无法确认登录状态。`);
+      }
+
+      const serializedSession = JSON.stringify(session);
+      if (!serializedSession) {
+        throw new Error(`步骤 ${visibleStep}：ChatGPT session 无法序列化，无法保存。`);
+      }
+      const line = `${serializedSession}\n`;
+      const endpoint = typeof buildLocalHelperEndpoint === 'function'
+        ? buildLocalHelperEndpoint(helperBaseUrl, CHATGPT_SESSION_APPEND_PATH)
+        : new URL(CHATGPT_SESSION_APPEND_PATH, `${helperBaseUrl.replace(/\/+$/, '')}/`).toString();
+
+      let response;
+      try {
+        response = await fetch(endpoint, {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ content: line }),
+        });
+      } catch (error) {
+        throw new Error(`本地 helper 请求失败，无法保存 ChatGPT session：${getErrorMessage(error)}`);
+      }
+
+      let payload = {};
+      try {
+        payload = await response.json();
+      } catch {
+        payload = {};
+      }
+      if (!response.ok || payload?.ok === false) {
+        throw new Error(
+          `本地 helper 保存 ChatGPT session 失败：${normalizeString(payload?.error) || `HTTP ${response.status}`}`
+        );
+      }
+
+      const filePath = normalizeString(payload?.filePath);
+      await addLog(
+        `步骤 ${visibleStep}：ChatGPT session 已追加到本地${filePath ? `：${filePath}` : ''}。`,
+        'ok'
+      );
+      return { filePath };
+    }
+
     async function exportLocalCpaJsonNoRt(state = {}, options = {}) {
       const visibleStep = Math.max(1, Math.floor(Number(options.visibleStep) || 7));
       const helperBaseUrl = normalizeHotmailLocalBaseUrl(state.hotmailLocalBaseUrl);
@@ -365,6 +425,7 @@
         await addLog(`步骤 6：等待 ${Math.round(waitMs / 1000)} 秒，确认注册成功并让页面稳定...`, 'info');
         await sleepWithStop(waitMs);
       }
+      await appendChatGptSessionJsonLine(state, 6);
       await clearCookiesIfEnabled(state);
       await addLog('步骤 6：注册成功等待完成，注册阶段已结束。', 'ok');
       await completeNodeFromBackground('wait-registration-success', {});
@@ -383,6 +444,7 @@
     return {
       executeLocalCpaJsonNoRtExport,
       executeStep6,
+      appendChatGptSessionJsonLine,
     };
   }
 
