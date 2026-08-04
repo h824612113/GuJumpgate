@@ -66,6 +66,7 @@ FETCH_LIMIT_DEFAULT = 5
 BASE_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 ACCOUNT_LOG_PATH = os.path.join(BASE_DIR, "data", "account-run-history.txt")
 ACCOUNT_RECORDS_SNAPSHOT_PATH = os.path.join(BASE_DIR, "data", "account-run-history.json")
+CHATGPT_SESSION_JSONL_PATH = os.path.join(BASE_DIR, "data", "chatgpt-session.jsonl")
 ACCOUNT_RECORDS_LOCK = threading.Lock()
 
 
@@ -221,6 +222,19 @@ def append_account_log(email_addr, password, status, recorded_at="", reason=""):
         with open(ACCOUNT_LOG_PATH, "a", encoding="utf-8") as handle:
             handle.write(line)
     return ACCOUNT_LOG_PATH
+
+
+def append_chatgpt_session_json_line(content):
+    normalized_content = str(content or "").replace("\r", "").replace("\n", "")
+    if not normalized_content.strip():
+        raise RuntimeError("Missing session content")
+
+    target_path = Path(str(CHATGPT_SESSION_JSONL_PATH).strip()).expanduser()
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    with ACCOUNT_RECORDS_LOCK:
+        with open(target_path, "a", encoding="utf-8") as handle:
+            handle.write(normalized_content + "\n")
+    return str(target_path)
 
 
 def save_local_cpa_json(file_path, content, directory_path=""):
@@ -892,6 +906,14 @@ class HotmailHelperHandler(BaseHTTPRequestHandler):
                     payload.get("recordedAt"),
                     payload.get("reason"),
                 )
+                json_response(self, 200, {
+                    "ok": True,
+                    "filePath": file_path,
+                })
+                return
+
+            if request_path == "/append-chatgpt-session":
+                file_path = append_chatgpt_session_json_line(payload.get("content"))
                 json_response(self, 200, {
                     "ok": True,
                     "filePath": file_path,
