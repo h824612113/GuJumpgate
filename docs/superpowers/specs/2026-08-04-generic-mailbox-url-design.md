@@ -45,7 +45,7 @@ user@icloud.com----http://yangyang.website/messages/取信令牌/user@icloud.com
 4. 路径必须恰好包含三个非空段：`messages/{token}/{email}`。
 5. token 必须是单个路径段。
 6. 最后一个路径段解码并规范化后，必须与记录开头邮箱完全一致。
-7. 拒绝 IPv4、IPv6 回环、私网、链路本地和未指定地址的字面量形式，避免直接访问明显的本地网络目标。
+7. 拒绝所有 IPv4、IPv6 字面量，以及 `localhost` 主机名，避免直接访问本地网络目标；通用格式仅接受域名主机。
 
 原有 `icloud-api.top/show/{token}/{email}` 仍按相同字段约束处理。原有 `yangyang.website/messages/` 两行续接格式继续保留；通用新域名只要求支持用户当前提供的完整单行格式，不扩大续行状态机范围。
 
@@ -120,7 +120,7 @@ README 说明：
 2. 任意 HTTP 域名 `/messages/{token}/{email}` 可导入。
 3. 多条通用 URL 可通过统一队列和旧 Hotmail 批量入口导入，并保持顺序。
 4. URL 尾部邮箱不一致、路径段数量错误、非 `messages` 路径、查询参数、片段、账号密码或显式端口被拒绝。
-5. localhost、私网及其他本地 IP 字面量被拒绝。
+5. localhost 与所有 IP 字面量被拒绝。
 6. 通用 HTTP/HTTPS URL 可以轮询 JSON、HTML和纯文本中的六位验证码。
 7. 同源 `/messages/` 内跳转可接受。
 8. 跨协议、跨域、跨端口和离开 `/messages/` 的跳转在读取正文前被拒绝。
@@ -135,4 +135,3 @@ README 说明：
 - 当取信页面返回新的六位验证码时，流程可以提取并提交。
 - 违规 URL 和越界跳转被拒绝，且错误可诊断但不泄密。
 - 新增测试、现有全量测试、JavaScript 语法检查和 diff 检查全部通过。
-

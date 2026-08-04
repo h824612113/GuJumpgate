@@ -13,7 +13,7 @@
 - 新 URL 允许 `http:` 和 `https:`，并且必须是 `/messages/{token}/{email}`。
 - 兼容 `https://icloud-api.top/show/{token}/{email}` 与既有 `yangyang.website` 两行续行导入。
 - 禁止 URL 用户名、密码、显式端口、查询参数和片段。
-- 拒绝 localhost 及明显本地/私有 IP 字面量。
+- 拒绝 localhost 及所有 IP 字面量。
 - 取信最终响应必须同协议、同主机、同端口且仍处于原路径族。
 - 日志、错误和界面不得输出完整取信 URL 或 token。
 
