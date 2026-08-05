@@ -188,6 +188,38 @@ test('polls an iCloud shared mailbox URL that remains under the shared path', as
   assert.equal(result.code, '654321');
 });
 
+test('rejects a path mailbox URL whose embedded mailbox is unrelated to the active entry', async () => {
+  const urls = [
+    'https://icloud-api.top/s/shared-token/other@icloud.com',
+    'https://icloud-api.top/show/show-token/other@icloud.com',
+    'https://mailbox.example/messages/message-token/other@icloud.com',
+  ];
+
+  for (const url of urls) {
+    let fetchCalled = false;
+    const api = provider.createIcloudUrlProvider({
+      fetchImpl: async () => {
+        fetchCalled = true;
+        throw new Error('fetch should not run');
+      },
+      sleep: async () => {},
+      throwIfStopped() {},
+    });
+
+    await assert.rejects(
+      api.pollVerificationCode(4, {
+        activeMixedMailboxEntry: {
+          type: 'icloud-url',
+          email: 'alias+nmi@icloud.com',
+          url,
+        },
+      }, { maxAttempts: 1 }),
+      /取信地址不受信任/
+    );
+    assert.equal(fetchCalled, false);
+  }
+});
+
 test('polls arbitrary HTTPS and HTTP messages URLs with same-origin inbox responses', async () => {
   const cases = [
     {
@@ -254,6 +286,43 @@ test('polls a token-query mailbox URL without exposing its token in logs', async
 
   assert.equal(result.code, '456789');
   assert.equal(logs.join('\n').includes('mailbox-token-not-for-logs'), false);
+});
+
+test('polls a FlySMS fragment pickup URL through its authenticated latest-mail API', async () => {
+  const pickupUrl = 'https://flysms.xyz/icloud/pickup#email=alias%40icloud.com&key=tok_mailbox-token-not-for-logs';
+  const requests = [];
+  const logs = [];
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return new Response(JSON.stringify({
+        email: 'alias@icloud.com',
+        message: { text: '验证码：456789' },
+      }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+    sleep: async () => {},
+    throwIfStopped() {},
+    addLog: async (message) => logs.push(message),
+  });
+
+  const result = await api.pollVerificationCode(4, {
+    activeMixedMailboxEntry: {
+      type: 'icloud-url',
+      email: 'alias+kio@icloud.com',
+      url: pickupUrl,
+    },
+  }, { maxAttempts: 1 });
+
+  assert.equal(result.code, '456789');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, 'https://flysms.xyz/icloud/api/pickup/messages/latest');
+  assert.equal(requests[0].options.credentials, 'omit');
+  assert.equal(requests[0].options.headers.Authorization, 'Bearer tok_mailbox-token-not-for-logs');
+  assert.equal(requests[0].options.headers['X-Mailbox-Email'], 'alias@icloud.com');
+  assert.equal(logs.join('\n').includes('tok_mailbox-token-not-for-logs'), false);
 });
 
 test('rejects redirected responses outside the original mailbox boundary before reading content', async () => {

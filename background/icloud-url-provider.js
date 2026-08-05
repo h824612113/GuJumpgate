@@ -18,6 +18,7 @@
   ];
   const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const MAIL_QUERY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+  const FLYSMS_TOKEN_PATTERN = /^tok_[A-Za-z0-9_-]{1,508}$/;
 
   function normalizeCode(value = '') {
     const code = String(value || '').trim();
@@ -221,6 +222,19 @@
     return String(value || '').trim().toLowerCase();
   }
 
+  function isEquivalentIcloudMailboxEmail(importedEmail, credentialEmail) {
+    const imported = normalizeEmail(importedEmail);
+    const credential = normalizeEmail(credentialEmail);
+    if (imported === credential) return true;
+
+    const [importedLocal, importedDomain] = imported.split('@');
+    const [credentialLocal, credentialDomain] = credential.split('@');
+    return importedDomain === 'icloud.com'
+      && credentialDomain === 'icloud.com'
+      && !credentialLocal.includes('+')
+      && importedLocal.startsWith(`${credentialLocal}+`);
+  }
+
   function hasExplicitMailboxUrlPort(rawUrl = '') {
     const authority = String(rawUrl || '').trim().match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i)?.[1] || '';
     const hostnamePort = authority.slice(authority.lastIndexOf('@') + 1);
@@ -264,6 +278,33 @@
     return null;
   }
 
+  function getFlySmsUrlRule(parsed) {
+    return parsed?.protocol === 'https:'
+      && String(parsed?.hostname || '').toLowerCase() === 'flysms.xyz'
+      && parsed?.pathname === '/icloud/pickup'
+      ? { pathPrefix: '/icloud/pickup', credentialShape: 'fragment-token' }
+      : null;
+  }
+
+  function getFlySmsFragmentCredential(parsed) {
+    const fragment = String(parsed?.hash || '').replace(/^#/, '');
+    if (!fragment) return null;
+    const params = new URLSearchParams(fragment);
+    const emailValues = params.getAll('email');
+    const keyValues = params.getAll('key');
+    const email = normalizeEmail(emailValues[0]);
+    if (
+      params.size !== 2
+      || emailValues.length !== 1
+      || keyValues.length !== 1
+      || !EMAIL_PATTERN.test(email)
+      || !FLYSMS_TOKEN_PATTERN.test(keyValues[0])
+    ) {
+      return null;
+    }
+    return { email, token: keyValues[0] };
+  }
+
   function hasValidMailQueryCredential(parsed, expectedEmail = '') {
     const emailValues = parsed.searchParams.getAll('email');
     const tokenValues = parsed.searchParams.getAll('token');
@@ -300,15 +341,27 @@
     } catch {
       return null;
     }
-    if (parsed.username || parsed.password || parsed.port || parsed.hash || hasExplicitMailboxUrlPort(rawUrl)) return null;
+    if (parsed.username || parsed.password || parsed.port || hasExplicitMailboxUrlPort(rawUrl)) return null;
 
-    const rule = getMailboxUrlRule(parsed);
+    const rule = getFlySmsUrlRule(parsed) || getMailboxUrlRule(parsed);
     if (!rule || !parsed.pathname.startsWith(rule.pathPrefix)) return null;
 
     if (requireCredentialShape) {
+      if (rule.credentialShape === 'fragment-token') {
+        const credential = getFlySmsFragmentCredential(parsed);
+        if (
+          parsed.search
+          || !credential
+          || (expectedEmail && !isEquivalentIcloudMailboxEmail(expectedEmail, credential.email))
+        ) {
+          return null;
+        }
+        return { parsed, rule, credential };
+      }
       if (rule.credentialShape === 'query-token') {
         return hasValidMailQueryCredential(parsed, expectedEmail) ? { parsed, rule } : null;
       }
+      if (parsed.hash) return null;
       if (parsed.search || parsed.hash) return null;
       const pathSegments = parsed.pathname.split('/').slice(1);
       const expectedPrefix = rule.pathPrefix.split('/').filter(Boolean)[0];
@@ -319,6 +372,17 @@
         || !pathSegments[2]
       ) {
         return null;
+      }
+      if (expectedEmail) {
+        let pathEmail = '';
+        try {
+          pathEmail = normalizeEmail(decodeURIComponent(pathSegments[2]));
+        } catch {
+          return null;
+        }
+        if (!isEquivalentIcloudMailboxEmail(expectedEmail, pathEmail)) {
+          return null;
+        }
       }
     }
 
@@ -338,6 +402,28 @@
       || finalResponse.parsed.hostname !== request.parsed.hostname
       || finalResponse.parsed.port !== request.parsed.port
       || finalResponse.rule.pathPrefix !== request.rule.pathPrefix
+    ) {
+      throw new Error('iCloud URL 响应地址不受信任。');
+    }
+  }
+
+  function validateFlySmsApiResponseUrl(responseUrl, endpointUrl) {
+    let parsed;
+    try {
+      parsed = new URL(String(responseUrl || endpointUrl));
+    } catch {
+      throw new Error('iCloud URL 响应地址不受信任。');
+    }
+    const endpoint = new URL(endpointUrl);
+    if (
+      parsed.protocol !== endpoint.protocol
+      || parsed.hostname !== endpoint.hostname
+      || parsed.port !== endpoint.port
+      || parsed.username
+      || parsed.password
+      || parsed.search
+      || parsed.hash
+      || parsed.pathname !== endpoint.pathname
     ) {
       throw new Error('iCloud URL 响应地址不受信任。');
     }
@@ -411,7 +497,7 @@
     const throwIfStopped = deps.throwIfStopped || (() => {});
     const addLog = deps.addLog || (async () => {});
 
-    async function requestMailboxPayload(url, timeoutMs, validateRequestUrl) {
+    async function requestMailboxPayload(url, timeoutMs, validateRequestUrl, headers) {
       const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
       const timer = controller
         ? setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || DEFAULT_TIMEOUT_MS))
@@ -421,6 +507,7 @@
           method: 'GET',
           credentials: 'omit',
           cache: 'no-store',
+          ...(headers ? { headers } : {}),
           signal: controller?.signal,
         });
         validateRequestUrl(response.url || url);
@@ -438,9 +525,31 @@
       }
     }
 
-    async function requestMailbox(url, email, timeoutMs) {
-      if (!parseTrustedMailboxUrl(url, true, email)) {
+    async function requestFlySmsMailbox(url, email, timeoutMs, trusted) {
+      const credential = trusted?.credential;
+      if (!credential) {
         throw new Error('iCloud URL 取信地址不受信任。');
+      }
+      const endpoint = `${trusted.parsed.origin}/icloud/api/pickup/messages/latest`;
+      return requestMailboxPayload(
+        endpoint,
+        timeoutMs,
+        (responseUrl) => validateFlySmsApiResponseUrl(responseUrl, endpoint),
+        {
+          Accept: 'application/json',
+          Authorization: `Bearer ${credential.token}`,
+          'X-Mailbox-Email': credential.email,
+        }
+      );
+    }
+
+    async function requestMailbox(url, email, timeoutMs) {
+      const trusted = parseTrustedMailboxUrl(url, true, email);
+      if (!trusted) {
+        throw new Error('iCloud URL 取信地址不受信任。');
+      }
+      if (trusted.rule.credentialShape === 'fragment-token') {
+        return requestFlySmsMailbox(url, email, timeoutMs, trusted);
       }
       return requestMailboxPayload(url, timeoutMs, (responseUrl) => validateMailboxResponseUrl(url, responseUrl, email));
     }

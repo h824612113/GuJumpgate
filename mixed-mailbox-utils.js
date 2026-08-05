@@ -17,9 +17,23 @@
     { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 's' },
   ];
   const MAIL_QUERY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+  const FLYSMS_TOKEN_PATTERN = /^tok_[A-Za-z0-9_-]{1,508}$/;
 
   function normalizeEmail(value = '') {
     return String(value || '').trim().toLowerCase();
+  }
+
+  function isEquivalentIcloudMailboxEmail(importedEmail, credentialEmail) {
+    const imported = normalizeEmail(importedEmail);
+    const credential = normalizeEmail(credentialEmail);
+    if (imported === credential) return true;
+
+    const [importedLocal, importedDomain] = imported.split('@');
+    const [credentialLocal, credentialDomain] = credential.split('@');
+    return importedDomain === 'icloud.com'
+      && credentialDomain === 'icloud.com'
+      && !credentialLocal.includes('+')
+      && importedLocal.startsWith(`${credentialLocal}+`);
   }
 
   function hasExplicitMailboxUrlPort(rawUrl = '') {
@@ -67,6 +81,35 @@
     return null;
   }
 
+  function getFlySmsUrlRule(parsed) {
+    return parsed?.protocol === 'https:'
+      && String(parsed?.hostname || '').toLowerCase() === 'flysms.xyz'
+      && parsed?.pathname === '/icloud/pickup'
+      ? { pathPrefix: 'icloud/pickup', credentialShape: 'fragment-token' }
+      : null;
+  }
+
+  function getFlySmsFragmentCredential(parsed) {
+    const fragment = String(parsed?.hash || '').replace(/^#/, '');
+    if (!fragment) return null;
+    const params = new URLSearchParams(fragment);
+    const emailValues = params.getAll('email');
+    const keyValues = params.getAll('key');
+    if (
+      params.size !== 2
+      || emailValues.length !== 1
+      || keyValues.length !== 1
+      || !EMAIL_PATTERN.test(normalizeEmail(emailValues[0]))
+      || !FLYSMS_TOKEN_PATTERN.test(keyValues[0])
+    ) {
+      return null;
+    }
+    return {
+      email: normalizeEmail(emailValues[0]),
+      token: keyValues[0],
+    };
+  }
+
   function hasValidMailQueryCredential(parsed, email) {
     const emailValues = parsed.searchParams.getAll('email');
     const tokenValues = parsed.searchParams.getAll('token');
@@ -90,13 +133,25 @@
       return { ok: false, error: 'iCloud URL 格式无效。' };
     }
 
-    if (parsed.username || parsed.password || parsed.port || parsed.hash || hasExplicitMailboxUrlPort(rawUrl)) {
-      return { ok: false, error: 'iCloud URL 不能包含登录信息、端口或片段。' };
+    if (parsed.username || parsed.password || parsed.port || hasExplicitMailboxUrlPort(rawUrl)) {
+      return { ok: false, error: 'iCloud URL 不能包含登录信息或端口。' };
     }
 
-    const rule = getMailboxUrlRule(parsed);
+    const rule = getFlySmsUrlRule(parsed) || getMailboxUrlRule(parsed);
     if (!rule) {
       return { ok: false, error: 'iCloud URL 主机或协议不受支持。' };
+    }
+
+    if (rule.credentialShape === 'fragment-token') {
+      const credential = getFlySmsFragmentCredential(parsed);
+      if (parsed.search || !credential || !isEquivalentIcloudMailboxEmail(email, credential.email)) {
+        return { ok: false, error: 'FlySMS URL 的邮箱或片段凭据无效。' };
+      }
+      return { ok: true, url: parsed.toString() };
+    }
+
+    if (parsed.hash) {
+      return { ok: false, error: 'iCloud URL 不能包含片段。' };
     }
 
     if (rule.credentialShape === 'query-token') {
@@ -125,7 +180,7 @@
     } catch {
       return { ok: false, error: 'iCloud URL 尾部邮箱格式无效。' };
     }
-    if (pathEmail !== email) {
+    if (!isEquivalentIcloudMailboxEmail(email, pathEmail)) {
       return { ok: false, error: 'iCloud URL 尾部邮箱与导入邮箱不一致。' };
     }
 

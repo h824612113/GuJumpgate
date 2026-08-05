@@ -50,6 +50,32 @@ test('parses token-query mailbox URLs when the query email matches the imported 
   ]);
 });
 
+test('parses FlySMS fragment pickup URLs and allows an iCloud plus-tag alias', () => {
+  const result = utils.parseMixedMailboxImport(
+    'alias+kio@icloud.com----https://flysms.xyz/icloud/pickup#email=alias%40icloud.com&key=tok_AbCdEfGhIjKlMnOp_QrStUvWxYz1234'
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].email, 'alias+kio@icloud.com');
+  assert.match(result.records[0].url, /^https:\/\/flysms\.xyz\/icloud\/pickup#email=/);
+});
+
+test('rejects unsafe or unrelated FlySMS fragment pickup credentials', () => {
+  const cases = [
+    'alias@icloud.com----https://flysms.xyz/icloud/pickup#email=other%40icloud.com&key=tok_AbCdEfGhIjKlMnOp_QrStUvWxYz1234',
+    'alias@icloud.com----https://flysms.xyz/icloud/pickup?email=alias%40icloud.com#key=tok_AbCdEfGhIjKlMnOp_QrStUvWxYz1234',
+    'alias@icloud.com----https://flysms.xyz/icloud/pickup#email=alias%40icloud.com&key=not-a-token',
+    'alias@icloud.com----https://mailbox.example/icloud/pickup#email=alias%40icloud.com&key=tok_AbCdEfGhIjKlMnOp_QrStUvWxYz1234',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
 test('rejects token-query mailbox URLs with mismatched emails or unsafe query shapes', () => {
   const cases = [
     'one@icloud.com----https://mailbox.example/mail?email=other%40icloud.com&token=AbCdEfGhIjKlMnOp_QrStUvWxYz-1234',
@@ -75,6 +101,17 @@ test('parses HTTPS iCloud shared mailbox URLs', () => {
   assert.equal(result.records.length, 1);
   assert.equal(result.records[0].type, 'icloud-url');
   assert.equal(result.records[0].url, 'https://icloud-api.top/s/shared-token/alias@icloud.com');
+});
+
+test('accepts iCloud plus-tag aliases for path-based mailbox URLs', () => {
+  const result = utils.parseMixedMailboxImport([
+    'alias+nmi@icloud.com----https://icloud-api.top/s/shared-token/alias@icloud.com',
+    'alias+nmi@icloud.com----https://icloud-api.top/show/show-token/alias@icloud.com',
+    'alias+nmi@icloud.com----https://mailbox.example/messages/message-token/alias@icloud.com',
+  ].join('\n'));
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.records.length, 3);
 });
 
 test('rejects insecure or malformed iCloud shared mailbox URLs', () => {
@@ -280,8 +317,10 @@ test('selects the first enabled unused queue item', () => {
 
 test('redacts mailbox secrets and resolves runtime providers', () => {
   const secret = 'a@icloud.com----https://icloud-api.top/show/sensitive-token/a@icloud.com';
+  const flySmsSecret = 'alias+kio@icloud.com----https://flysms.xyz/icloud/pickup#email=alias%40icloud.com&key=tok_sensitive-token';
 
   assert.equal(utils.redactMixedMailboxSecret(secret).includes('sensitive-token'), false);
+  assert.equal(utils.redactMixedMailboxSecret(flySmsSecret).includes('tok_sensitive-token'), false);
   assert.equal(utils.resolveMixedMailboxProvider({ type: 'outlook' }), 'hotmail-api');
   assert.equal(utils.resolveMixedMailboxProvider({ type: 'icloud-url' }), 'icloud-url');
 });
