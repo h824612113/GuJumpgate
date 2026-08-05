@@ -16,6 +16,7 @@
     { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 'show' },
     { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 's' },
   ];
+  const MAIL_QUERY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 
   function normalizeEmail(value = '') {
     return String(value || '').trim().toLowerCase();
@@ -44,7 +45,8 @@
 
   function getMailboxUrlRule(parsed) {
     const hostname = String(parsed?.hostname || '').toLowerCase();
-    const pathPrefix = String(parsed?.pathname || '').split('/')[1] || '';
+    const pathname = String(parsed?.pathname || '');
+    const pathPrefix = pathname.split('/')[1] || '';
     const icloudRule = ICLOUD_URL_RULES.find((rule) => (
       parsed?.protocol === rule.protocol
       && hostname === rule.hostname
@@ -56,10 +58,28 @@
       (parsed?.protocol === 'http:' || parsed?.protocol === 'https:')
       && !isRejectedMailboxHostname(hostname)
     ) {
+      if (pathname === '/mail') {
+        return { pathPrefix: 'mail', credentialShape: 'query-token' };
+      }
       return { pathPrefix: 'messages' };
     }
 
     return null;
+  }
+
+  function hasValidMailQueryCredential(parsed, email) {
+    const emailValues = parsed.searchParams.getAll('email');
+    const tokenValues = parsed.searchParams.getAll('token');
+    if (
+      parsed.searchParams.size !== 2
+      || emailValues.length !== 1
+      || tokenValues.length !== 1
+      || normalizeEmail(emailValues[0]) !== email
+      || !MAIL_QUERY_TOKEN_PATTERN.test(tokenValues[0])
+    ) {
+      return false;
+    }
+    return true;
   }
 
   function validateIcloudUrl(rawUrl, email) {
@@ -70,14 +90,26 @@
       return { ok: false, error: 'iCloud URL 格式无效。' };
     }
 
-    if (parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || hasExplicitMailboxUrlPort(rawUrl)) {
-      return { ok: false, error: 'iCloud URL 不能包含登录信息、端口、查询参数或片段。' };
+    if (parsed.username || parsed.password || parsed.port || parsed.hash || hasExplicitMailboxUrlPort(rawUrl)) {
+      return { ok: false, error: 'iCloud URL 不能包含登录信息、端口或片段。' };
     }
 
     const rule = getMailboxUrlRule(parsed);
     if (!rule) {
       return { ok: false, error: 'iCloud URL 主机或协议不受支持。' };
     }
+
+    if (rule.credentialShape === 'query-token') {
+      if (!hasValidMailQueryCredential(parsed, email)) {
+        return { ok: false, error: 'iCloud URL 的 /mail 查询参数无效。' };
+      }
+      return { ok: true, url: parsed.toString() };
+    }
+
+    if (parsed.search) {
+      return { ok: false, error: 'iCloud URL 不能包含查询参数。' };
+    }
+
     const pathSegments = parsed.pathname.split('/').slice(1);
     if (
       pathSegments.length !== 3

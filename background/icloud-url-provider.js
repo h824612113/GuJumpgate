@@ -16,6 +16,8 @@
     { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: '/show/' },
     { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: '/s/' },
   ];
+  const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const MAIL_QUERY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 
   function normalizeCode(value = '') {
     const code = String(value || '').trim();
@@ -215,6 +217,10 @@
     return separatorIndex >= 0 ? credential.slice(separatorIndex + 4).trim() : '';
   }
 
+  function normalizeEmail(value = '') {
+    return String(value || '').trim().toLowerCase();
+  }
+
   function hasExplicitMailboxUrlPort(rawUrl = '') {
     const authority = String(rawUrl || '').trim().match(/^[a-z][a-z0-9+.-]*:\/\/([^/?#]*)/i)?.[1] || '';
     const hostnamePort = authority.slice(authority.lastIndexOf('@') + 1);
@@ -249,10 +255,29 @@
       (parsed?.protocol === 'http:' || parsed?.protocol === 'https:')
       && !isRejectedMailboxHostname(hostname)
     ) {
+      if (pathname === '/mail') {
+        return { pathPrefix: '/mail', credentialShape: 'query-token' };
+      }
       return { pathPrefix: '/messages/' };
     }
 
     return null;
+  }
+
+  function hasValidMailQueryCredential(parsed, expectedEmail = '') {
+    const emailValues = parsed.searchParams.getAll('email');
+    const tokenValues = parsed.searchParams.getAll('token');
+    const email = normalizeEmail(emailValues[0]);
+    if (
+      parsed.searchParams.size !== 2
+      || emailValues.length !== 1
+      || tokenValues.length !== 1
+      || !EMAIL_PATTERN.test(email)
+      || !MAIL_QUERY_TOKEN_PATTERN.test(tokenValues[0])
+    ) {
+      return false;
+    }
+    return !expectedEmail || email === normalizeEmail(expectedEmail);
   }
 
   async function parseResponsePayload(response) {
@@ -268,19 +293,22 @@
     return text;
   }
 
-  function parseTrustedMailboxUrl(rawUrl, requireCredentialShape = false) {
+  function parseTrustedMailboxUrl(rawUrl, requireCredentialShape = false, expectedEmail = '') {
     let parsed;
     try {
       parsed = new URL(String(rawUrl || '').trim());
     } catch {
       return null;
     }
-    if (parsed.username || parsed.password || parsed.port || hasExplicitMailboxUrlPort(rawUrl)) return null;
+    if (parsed.username || parsed.password || parsed.port || parsed.hash || hasExplicitMailboxUrlPort(rawUrl)) return null;
 
     const rule = getMailboxUrlRule(parsed);
     if (!rule || !parsed.pathname.startsWith(rule.pathPrefix)) return null;
 
     if (requireCredentialShape) {
+      if (rule.credentialShape === 'query-token') {
+        return hasValidMailQueryCredential(parsed, expectedEmail) ? { parsed, rule } : null;
+      }
       if (parsed.search || parsed.hash) return null;
       const pathSegments = parsed.pathname.split('/').slice(1);
       const expectedPrefix = rule.pathPrefix.split('/').filter(Boolean)[0];
@@ -297,8 +325,8 @@
     return { parsed, rule };
   }
 
-  function validateMailboxResponseUrl(requestUrl, responseUrl) {
-    const request = parseTrustedMailboxUrl(requestUrl, true);
+  function validateMailboxResponseUrl(requestUrl, responseUrl, expectedEmail = '') {
+    const request = parseTrustedMailboxUrl(requestUrl, true, expectedEmail);
     if (!request) {
       throw new Error('iCloud URL 取信地址不受信任。');
     }
@@ -410,11 +438,11 @@
       }
     }
 
-    async function requestMailbox(url, timeoutMs) {
-      if (!parseTrustedMailboxUrl(url, true)) {
+    async function requestMailbox(url, email, timeoutMs) {
+      if (!parseTrustedMailboxUrl(url, true, email)) {
         throw new Error('iCloud URL 取信地址不受信任。');
       }
-      return requestMailboxPayload(url, timeoutMs, (responseUrl) => validateMailboxResponseUrl(url, responseUrl));
+      return requestMailboxPayload(url, timeoutMs, (responseUrl) => validateMailboxResponseUrl(url, responseUrl, email));
     }
 
     async function requestSameOriginMailboxResource(url, credentialUrl, allowedPathPrefixes, timeoutMs) {
@@ -444,7 +472,7 @@
         throwIfStopped();
         try {
           await addLog(`步骤 ${step}：正在通过 iCloud URL 获取 ${entry.email} 的验证码（${attempt}/${maxAttempts}）...`, 'info');
-          const payload = await requestMailbox(url, timeoutMs);
+          const payload = await requestMailbox(url, entry.email, timeoutMs);
           const match = extractVerificationCodeFromIcloudUrlPayload(payload, {
             codePatterns: pollPayload.codePatterns || [],
             excludeCodes: pollPayload.excludeCodes || [],

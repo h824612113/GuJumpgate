@@ -227,6 +227,35 @@ test('polls arbitrary HTTPS and HTTP messages URLs with same-origin inbox respon
   }
 });
 
+test('polls a token-query mailbox URL without exposing its token in logs', async () => {
+  const credentialUrl = 'https://mailbox.example/mail?email=alias%40icloud.com&token=mailbox-token-not-for-logs';
+  const logs = [];
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl: async (url, options) => {
+      assert.equal(url, credentialUrl);
+      assert.equal(options.credentials, 'omit');
+      return new Response('验证码：456789', {
+        status: 200,
+        headers: { 'content-type': 'text/plain' },
+      });
+    },
+    sleep: async () => {},
+    throwIfStopped() {},
+    addLog: async (message) => logs.push(message),
+  });
+
+  const result = await api.pollVerificationCode(4, {
+    activeMixedMailboxEntry: {
+      type: 'icloud-url',
+      email: 'alias@icloud.com',
+      url: credentialUrl,
+    },
+  }, { maxAttempts: 1 });
+
+  assert.equal(result.code, '456789');
+  assert.equal(logs.join('\n').includes('mailbox-token-not-for-logs'), false);
+});
+
 test('rejects redirected responses outside the original mailbox boundary before reading content', async () => {
   const scenarios = [
     {

@@ -37,6 +37,35 @@ test('parses arbitrary HTTPS and HTTP messages mailbox URLs', () => {
   ]);
 });
 
+test('parses token-query mailbox URLs when the query email matches the imported email', () => {
+  const result = utils.parseMixedMailboxImport([
+    'one@icloud.com----https://mailbox.example/mail?email=one%40icloud.com&token=AbCdEfGhIjKlMnOp_QrStUvWxYz-1234',
+    'two@icloud.com----http://mailbox.example/mail?token=ZyXwVuTsRqPoNmLk_JiHgFeDcBa-4321&email=two%40icloud.com',
+  ].join('\n'));
+
+  assert.equal(result.errors.length, 0);
+  assert.deepEqual(result.records.map((item) => item.url), [
+    'https://mailbox.example/mail?email=one%40icloud.com&token=AbCdEfGhIjKlMnOp_QrStUvWxYz-1234',
+    'http://mailbox.example/mail?token=ZyXwVuTsRqPoNmLk_JiHgFeDcBa-4321&email=two%40icloud.com',
+  ]);
+});
+
+test('rejects token-query mailbox URLs with mismatched emails or unsafe query shapes', () => {
+  const cases = [
+    'one@icloud.com----https://mailbox.example/mail?email=other%40icloud.com&token=AbCdEfGhIjKlMnOp_QrStUvWxYz-1234',
+    'one@icloud.com----https://mailbox.example/mail?email=one%40icloud.com',
+    'one@icloud.com----https://mailbox.example/mail?email=one%40icloud.com&token=AbCdEfGhIjKlMnOp_QrStUvWxYz-1234&view=latest',
+    'one@icloud.com----https://mailbox.example/mail?email=one%40icloud.com&token=short',
+    'one@icloud.com----http://127.0.0.1/mail?email=one%40icloud.com&token=AbCdEfGhIjKlMnOp_QrStUvWxYz-1234',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
 test('parses HTTPS iCloud shared mailbox URLs', () => {
   const result = utils.parseMixedMailboxImport(
     'alias@icloud.com----https://icloud-api.top/s/shared-token/alias@icloud.com'
