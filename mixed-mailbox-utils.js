@@ -17,6 +17,7 @@
     { protocol: 'https:', hostname: 'icloud-api.top', pathPrefix: 's' },
   ];
   const MAIL_QUERY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+  const API_CODE_KEY_PATTERN = /^alias_[A-Za-z0-9_-]{16,507}$/;
   const FLYSMS_TOKEN_PATTERN = /^tok_[A-Za-z0-9_-]{1,508}$/;
 
   function normalizeEmail(value = '') {
@@ -75,6 +76,9 @@
       if (pathname === '/mail') {
         return { pathPrefix: 'mail', credentialShape: 'query-token' };
       }
+      if (pathname === '/api/v1/code') {
+        return { pathPrefix: 'api/v1/code', credentialShape: 'query-key' };
+      }
       return { pathPrefix: 'messages' };
     }
 
@@ -125,6 +129,16 @@
     return true;
   }
 
+  function hasValidApiCodeQueryCredential(parsed, email) {
+    const emailValues = parsed.searchParams.getAll('email');
+    const keyValues = parsed.searchParams.getAll('key');
+    return parsed.searchParams.size === 2
+      && emailValues.length === 1
+      && keyValues.length === 1
+      && normalizeEmail(emailValues[0]) === email
+      && API_CODE_KEY_PATTERN.test(keyValues[0]);
+  }
+
   function validateIcloudUrl(rawUrl, email) {
     let parsed;
     try {
@@ -157,6 +171,13 @@
     if (rule.credentialShape === 'query-token') {
       if (!hasValidMailQueryCredential(parsed, email)) {
         return { ok: false, error: 'iCloud URL 的 /mail 查询参数无效。' };
+      }
+      return { ok: true, url: parsed.toString() };
+    }
+
+    if (rule.credentialShape === 'query-key') {
+      if (!hasValidApiCodeQueryCredential(parsed, email)) {
+        return { ok: false, error: 'iCloud URL 的 /api/v1/code 查询参数无效。' };
       }
       return { ok: true, url: parsed.toString() };
     }

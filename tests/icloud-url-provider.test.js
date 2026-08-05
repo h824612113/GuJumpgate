@@ -288,6 +288,38 @@ test('polls a token-query mailbox URL without exposing its token in logs', async
   assert.equal(logs.join('\n').includes('mailbox-token-not-for-logs'), false);
 });
 
+test('polls an API code mailbox URL with its key query without logging the key', async () => {
+  const credentialUrl = 'https://mailbox.example/api/v1/code?email=alias%40icloud.com&key=alias_key-not-for-logs-1234567890';
+  const requests = [];
+  const logs = [];
+  const api = provider.createIcloudUrlProvider({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return new Response(JSON.stringify({ code: '456789' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    },
+    sleep: async () => {},
+    throwIfStopped() {},
+    addLog: async (message) => logs.push(message),
+  });
+
+  const result = await api.pollVerificationCode(4, {
+    activeMixedMailboxEntry: {
+      type: 'icloud-url',
+      email: 'alias@icloud.com',
+      url: credentialUrl,
+    },
+  }, { maxAttempts: 1 });
+
+  assert.equal(result.code, '456789');
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, credentialUrl);
+  assert.equal(requests[0].options.credentials, 'omit');
+  assert.equal(logs.join('\n').includes('alias_key-not-for-logs-1234567890'), false);
+});
+
 test('polls a FlySMS fragment pickup URL through its authenticated latest-mail API', async () => {
   const pickupUrl = 'https://flysms.xyz/icloud/pickup#email=alias%40icloud.com&key=tok_mailbox-token-not-for-logs';
   const requests = [];

@@ -50,6 +50,31 @@ test('parses token-query mailbox URLs when the query email matches the imported 
   ]);
 });
 
+test('parses API code mailbox URLs with an email and key query', () => {
+  const result = utils.parseMixedMailboxImport(
+    'alias@icloud.com----https://mailbox.example/api/v1/code?email=alias%40icloud.com&key=alias_AbCdEfGhIjKlMnOp_QrStUvWxYz1234'
+  );
+
+  assert.equal(result.errors.length, 0);
+  assert.equal(result.records.length, 1);
+  assert.equal(result.records[0].url, 'https://mailbox.example/api/v1/code?email=alias%40icloud.com&key=alias_AbCdEfGhIjKlMnOp_QrStUvWxYz1234');
+});
+
+test('rejects API code mailbox URLs with mismatched emails or unsafe query shapes', () => {
+  const cases = [
+    'alias@icloud.com----https://mailbox.example/api/v1/code?email=other%40icloud.com&key=alias_AbCdEfGhIjKlMnOp_QrStUvWxYz1234',
+    'alias@icloud.com----https://mailbox.example/api/v1/code?email=alias%40icloud.com&key=alias_short',
+    'alias@icloud.com----https://mailbox.example/api/v1/code?email=alias%40icloud.com&key=alias_AbCdEfGhIjKlMnOp_QrStUvWxYz1234&view=latest',
+    'alias@icloud.com----https://mailbox.example/api/v1/code?email=alias%40icloud.com&token=alias_AbCdEfGhIjKlMnOp_QrStUvWxYz1234',
+  ];
+
+  for (const value of cases) {
+    const result = utils.parseMixedMailboxImport(value);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.errors[0].lineNumber, 1);
+  }
+});
+
 test('parses FlySMS fragment pickup URLs and allows an iCloud plus-tag alias', () => {
   const result = utils.parseMixedMailboxImport(
     'alias+kio@icloud.com----https://flysms.xyz/icloud/pickup#email=alias%40icloud.com&key=tok_AbCdEfGhIjKlMnOp_QrStUvWxYz1234'

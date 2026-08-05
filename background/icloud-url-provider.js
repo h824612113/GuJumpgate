@@ -18,6 +18,7 @@
   ];
   const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
   const MAIL_QUERY_TOKEN_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
+  const API_CODE_KEY_PATTERN = /^alias_[A-Za-z0-9_-]{16,507}$/;
   const FLYSMS_TOKEN_PATTERN = /^tok_[A-Za-z0-9_-]{1,508}$/;
 
   function normalizeCode(value = '') {
@@ -272,6 +273,9 @@
       if (pathname === '/mail') {
         return { pathPrefix: '/mail', credentialShape: 'query-token' };
       }
+      if (pathname === '/api/v1/code') {
+        return { pathPrefix: '/api/v1/code', credentialShape: 'query-key' };
+      }
       return { pathPrefix: '/messages/' };
     }
 
@@ -321,6 +325,22 @@
     return !expectedEmail || email === normalizeEmail(expectedEmail);
   }
 
+  function hasValidApiCodeQueryCredential(parsed, expectedEmail = '') {
+    const emailValues = parsed.searchParams.getAll('email');
+    const keyValues = parsed.searchParams.getAll('key');
+    const email = normalizeEmail(emailValues[0]);
+    if (
+      parsed.searchParams.size !== 2
+      || emailValues.length !== 1
+      || keyValues.length !== 1
+      || !EMAIL_PATTERN.test(email)
+      || !API_CODE_KEY_PATTERN.test(keyValues[0])
+    ) {
+      return false;
+    }
+    return !expectedEmail || isEquivalentIcloudMailboxEmail(expectedEmail, email);
+  }
+
   async function parseResponsePayload(response) {
     const text = await response.text();
     const contentType = String(response.headers?.get?.('content-type') || '').toLowerCase();
@@ -360,6 +380,9 @@
       }
       if (rule.credentialShape === 'query-token') {
         return hasValidMailQueryCredential(parsed, expectedEmail) ? { parsed, rule } : null;
+      }
+      if (rule.credentialShape === 'query-key') {
+        return hasValidApiCodeQueryCredential(parsed, expectedEmail) ? { parsed, rule } : null;
       }
       if (parsed.hash) return null;
       if (parsed.search || parsed.hash) return null;
